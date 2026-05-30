@@ -1,4 +1,7 @@
-ARG BASE_IMAGE=ghcr.io/tenstorrent/tt-metal/tt-metalium-ubuntu-22.04-release-amd64:latest-rc
+# Pinned to a concrete release tag (not the moving latest-rc) so Koyeb's build
+# cache key stays stable across rebuilds. Bump deliberately when you want a newer
+# tt-metalium. Available tags: github.com/tenstorrent/tt-metal/pkgs/container/tt-metal%2Ftt-metalium-ubuntu-22.04-release-amd64
+ARG BASE_IMAGE=ghcr.io/tenstorrent/tt-metal/tt-metalium-ubuntu-22.04-release-amd64:v0.71.2
 
 FROM ${BASE_IMAGE}
 

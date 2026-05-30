@@ -81,5 +81,7 @@ koyeb deploy . tt/vsc-tunnel \
 
 - This is a **worker** service (no inbound HTTP), so it has no public URL and no
   health-check port — the tunnel is outbound to Microsoft's tunnel relay.
-- To pin a reproducible base image, override the `BASE_IMAGE` build arg instead of
-  using the `latest-rc` tag.
+- The base image is pinned to a concrete tag (`...:v0.71.2`) via the `BASE_IMAGE`
+  build arg, so Koyeb's build cache key stays stable across rebuilds. Bump it
+  deliberately to move to a newer `tt-metalium` — see the
+  [available tags](https://github.com/tenstorrent/tt-metal/pkgs/container/tt-metal%2Ftt-metalium-ubuntu-22.04-release-amd64).
