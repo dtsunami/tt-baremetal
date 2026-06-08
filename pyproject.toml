@@ -18,7 +18,6 @@ dependencies = [
 
 [project.scripts]
 bhtop = "bhtop.cli:main"
-bhtop-bench = "bhtop.bench_host:main"
 bhtop-inject = "bhtop.inject_app:main"
 bhtop-metal = "bhtop.metal:main"
 

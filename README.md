@@ -8,7 +8,7 @@ read straight from the per-tile NIU hardware performance counters.
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e .
-bhtop            # live heatmap
+bhtop            # live NoC die floorplan
 ```
 
 ## What it does
@@ -69,17 +69,14 @@ This is the **realtime / live** layer of NoC observability. It complements:
 
 | command | what |
 |---|---|
-| **`bhtop`** | live NoC telemetry that distinguishes **physical** (die, rotatable) from **logical** (noc0 folded torus); dual-rail NIU links, distance/fold overlays, per-tile DRAM-affinity + fold-seam detail, GDDR6-controller bars |
-| **`bhtop --simple`** | Rich single-grid heatmap fallback |
+| **`bhtop`** | **observe** — live NoC telemetry that distinguishes **physical** (die, rotatable) from **logical** (noc0 folded torus); dual-rail NIU links, distance/fold overlays, per-tile DRAM-affinity + fold-seam detail, GDDR6-controller bars |
 | **`bhtop --topology` / `--orient 0` / `--no-arrows`** | open in the noc0 torus view / die-geographic orientation / heat-only (compact) |
-| **`bhtop-inject`** | injection + routing/bandwidth explorer — drive traffic from a source Tensix (`WASD` / `r` float) with patterns `1-5` (Tensix↔Tensix gather/scatter/halo + **`5` write to every GDDR6 controller**); reads back the **measured route** (0x500 transit) on the die, **moved bytes/flits/host-BW + busiest nodes**, and **per-GDDR6-controller writes-landed flits + BW**. NoC0-only today (W/N destinations wrap) |
-| **`bhtop-metal [test]`** | run a **tt-metal** NoC benchmark and visualize its **per-NoC** silicon footprint on the physical die + aggregate BW (optional; see below) |
-| **`bhtop-bench`** | host traffic generator + counter validation; reports **BW over both NoCs** by default |
+| **`bhtop-inject`** | **routing & congestion explorer** — drive host traffic from a source Tensix (`WASD` / `r` float) with patterns `1-5` (Tensix↔Tensix gather/scatter/halo + **`5` write to every GDDR6 controller**) and read back the **measured route** (0x500 transit) on the die + per-GDDR6-controller writes-landed flits. This is for *where traffic goes and where it collides*, not peak bandwidth — host injection is hard-capped at 32 B/flit (see below), so for real throughput use `bhtop-metal`. NoC0-only today (W/N destinations wrap) |
+| **`bhtop-metal [test]`** | **measure** — run a **tt-metal** on-chip NoC benchmark and visualize its **per-NoC** silicon footprint on the physical die + aggregate bandwidth. The only lane that reaches true 64 B-dense flit throughput (optional; see below) |
 
 ```bash
 bhtop                              # (l layout · r rotate · d dist · f fold · a arrows · m metric · n NoC · c calib · ↑↓←→ · q)
 bhtop-inject                       # streams traffic live (WASD src · 1-5 patterns · 5=write GDDR6 · x stream · f 1-shot · q)
-bhtop-bench --tile 2,2             # validate counters + NoC0 vs NoC1 wire BW
 bhtop-metal --list                 # list tt-metal benchmarks (if built)
 bhtop-metal AllToAllDirectedIdeal  # run one, see per-NoC footprint + aggregate BW
 python3 -m bhtop.floorplan         # dump the tile grid (die + noc0) + DRAM-controller map
