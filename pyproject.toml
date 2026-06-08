@@ -16,10 +16,17 @@ dependencies = [
     "textual>=1.0",
 ]
 
+[project.optional-dependencies]
+web = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+]
+
 [project.scripts]
 bhtop = "bhtop.cli:main"
 bhtop-inject = "bhtop.inject_app:main"
 bhtop-metal = "bhtop.metal:main"
+bhtop-web = "bhtop.web.server:main"
 
 [project.urls]
 Homepage = "https://github.com/tenstorrent/tt-isa-documentation"

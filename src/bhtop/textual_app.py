@@ -20,8 +20,6 @@ Every link draws BOTH NoC wires (NoC0 ▸▾ purple / NoC1 ◂▴ cyan). Overlay
   * `f` fold — colour tiles by noc0 index, so the logical ordering is visible snaking
     across physical space (up-ramp then fold-back).
 """
-import time
-
 from rich.table import Table
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -29,58 +27,17 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Static
 
 from ttexalens import init_ttexalens
-from ttexalens.tt_exalens_lib import read_words_from_device
 
 from . import noc_counters as nc
 from . import geometry as G
+from .poller import Poller, SAFE_KINDS
 from .floorplan import build, KIND_RGB
 from .render import (
     NOC0_COL, NOC1_COL, render_mesh, render_physical, _blend, _rgb, _fmt,
 )
 
 
-# Only ever poll the data-movement fabric. Reading NIU/router registers on the
-# management tiles (ARC / Security / PCIe / L2CPU) can wedge NoC0 — recoverable
-# only with `tt-smi -r 0`. See the bh-noc-hang-hazard note. Management tiles still
-# render in the grid (from the floorplan); they just never carry a heat value.
-SAFE_KINDS = {"tensix", "dram", "eth"}
-
 OVERLAY_NAME = {None: "bandwidth", "dist": "phys-distance", "index": "fold/logical-order"}
-
-
-class Poller:
-    """Reads NIU counters for the data-movement tiles on both NoCs; keys bandwidth by tile.key (noc0)."""
-    def __init__(self, fp, ctx, calib=True):
-        self.fp, self.ctx, self.calib = fp, ctx, calib
-        self.prev, self.bw, self.last_t = {}, {}, None
-
-    def sample(self):
-        now = time.monotonic()
-        dt = (now - self.last_t) if self.last_t else None
-        cal = (nc.COUNTER_ARRAY_LEN + nc.FLIT_BYTES - 1) // nc.FLIT_BYTES
-        for t in self.fp.addressable():
-            if t.kind not in SAFE_KINDS:        # never touch management-tile NIUs (hang hazard)
-                continue
-            for noc in (0, 1):
-                try:
-                    words = read_words_from_device(
-                        t.coord, nc.counter_base(noc), word_count=nc.COUNTER_ARRAY_LEN,
-                        noc_id=noc, context=self.ctx)
-                except Exception:
-                    continue
-                prev = self.prev.get((t.key, noc))
-                if prev is not None and dt:
-                    bw = nc.tile_bandwidths(words, prev, dt)
-                    if self.calib:
-                        bw["tx_slave"] = max(0.0, bw["tx_slave"] - cal * nc.FLIT_BYTES / dt)
-                    self.bw[(t.key, noc)] = bw
-                self.prev[(t.key, noc)] = words
-        self.last_t = now
-
-    def scalar(self, tile, noc, metric):
-        if tile is None:
-            return 0.0
-        return nc.metric_scalar(self.bw.get((tile.key, noc), {}), metric)
 
 
 class RoutingView(Static):

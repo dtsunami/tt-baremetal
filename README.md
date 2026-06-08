@@ -82,6 +82,26 @@ bhtop-metal AllToAllDirectedIdeal  # run one, see per-NoC footprint + aggregate 
 python3 -m bhtop.floorplan         # dump the tile grid (die + noc0) + DRAM-controller map
 ```
 
+## Web UI (`bhtop-web`)
+
+A browser app for *exploring* the chip — the real board photo `blackhole_card.png` as a
+**zoomable/pannable backdrop** with live NoC/NIU/DRAM bandwidth overlaid, registered to the die
+package; hover tooltips and a per-tile **drilldown** page (all NIU counters on both NoCs, DRAM
+affinity, fold-seam neighbours). FastAPI + WebSocket backend, Svelte frontend.
+
+```bash
+pip install -e ".[web]"            # adds fastapi + uvicorn (TUI install stays lean)
+cd frontend && npm install && npm run build   # build the Svelte UI (needs Node 18+)
+bhtop-web                          # serve at http://localhost:8000
+```
+
+**One device owner:** all PCIe access funnels through a single worker thread (`web/device.py`),
+so the chip never sees concurrent access and the hang-hazard gating holds — the poller only ever
+touches `tensix/dram/eth` (verified: 156/163 tiles, 0 management). The overlay sits on the package
+*footprint* (tiles aren't visible under the lid); re-tune `CARD_PACKAGE_PX` in `geometry.py` if it
+drifts. Inject + kernel-deploy panels build on this same serialized owner. Dev: run the backend on
+`:8000` and `npm run dev` for the Vite server (it proxies `/api` + `/ws`).
+
 ## Architecture / dependencies
 
 bhtop's only dependencies are **`tt-exalens` + `rich` + `textual`**. It reads Blackhole's NIU

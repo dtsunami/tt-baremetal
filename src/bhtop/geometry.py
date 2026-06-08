@@ -186,6 +186,36 @@ def physical_link_hops(fp):
 
 
 # ---- fold-ramp trace -------------------------------------------------------
+# ---- card-photo overlay registration ---------------------------------------
+# Pixel bounding box of the BLACKHOLE die-package lid in blackhole_card.png
+# (image is 2263x961). Measured by eye from the board photo — re-tune HERE if the
+# live overlay visibly drifts off the package. (x0, y0, x1, y1).
+CARD_IMAGE = "blackhole_card.png"
+CARD_IMAGE_PX = (2263, 961)
+CARD_PACKAGE_PX = (1050, 265, 1415, 630)
+CARD_ORIENT = 90   # die mounted rotated 90° on the card (DRAM top/bottom, Eth left)
+
+
+def card_overlay(fp, package_px=CARD_PACKAGE_PX, orient=CARD_ORIENT):
+    """Map each tile's die coord -> a pixel rect inside the package lid, in card
+    orientation. Returns {noc0_key: {x, y, w, h}} (pixels in the card image).
+
+    The tile grid is NOT visible under the metal lid, so this registers the grid
+    onto the package *footprint* via an affine from die cells to the lid box — not a
+    per-tile photo feature. Honest approximation; the value is physical context
+    (cooler / GDDR6 / PCIe around a live, glowing die)."""
+    x0, y0, x1, y1 = package_px
+    cols, rows = grid_dims(fp, "die")
+    _, _, w, h = rotate((0, 0), orient, cols, rows)   # rotated grid dims
+    cw, ch = (x1 - x0) / w, (y1 - y0) / h
+    out = {}
+    for t in fp.placed:
+        rx, ry, _, _ = rotate(t.die, orient, cols, rows)
+        out[t.noc0] = {"x": round(x0 + rx * cw, 1), "y": round(y0 + ry * ch, 1),
+                       "w": round(cw, 1), "h": round(ch, 1)}
+    return out
+
+
 def fold_ramp(fp, noc_row):
     """Walk noc0 cols 0..max along one noc0 row; return the die-x sequence and the
     per-step die displacement. Shows NoC0 +x as two monotone ramps meeting at the
