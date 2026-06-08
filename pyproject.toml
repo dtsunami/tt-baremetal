@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bhtop"
+version = "0.1.0"
+description = "Live Tenstorrent Blackhole NoC telemetry from NIU hardware counters"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Dan", email = "dan.tsunami@gmail.com" }]
+keywords = ["tenstorrent", "blackhole", "noc", "telemetry", "tui"]
+dependencies = [
+    "tt-exalens>=0.3.21",
+    "rich>=13",
+    "textual>=1.0",
+]
+
+[project.scripts]
+bhtop = "bhtop.cli:main"
+bhtop-bench = "bhtop.bench_host:main"
+bhtop-inject = "bhtop.inject_app:main"
+bhtop-metal = "bhtop.metal:main"
+
+[project.urls]
+Homepage = "https://github.com/tenstorrent/tt-isa-documentation"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bhtop"]
