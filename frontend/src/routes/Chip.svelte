@@ -30,7 +30,7 @@
 
   $: lod = scale >= 4.5 ? 'high' : scale >= 2 ? 'mid' : 'low'
   $: sw = 1 / scale
-  $: view = layout === 'topo' ? { w: PAD * 2 + cols * CELL, h: PAD * 2 + rows * CELL } : { w: img.w, h: img.h }
+  $: view = layout === 'topo' || !img ? { w: PAD * 2 + cols * CELL, h: PAD * 2 + rows * CELL } : { w: img.w, h: img.h }
 
   // remap a server rect (computed for the default box) to the live-adjusted box — pure affine
   function remap(r) {
