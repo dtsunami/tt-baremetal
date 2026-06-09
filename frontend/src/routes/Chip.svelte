@@ -14,6 +14,7 @@
 
   // 'card' = photo + accurate routing registered to the die; 'topo' = clean noc0 torus grid
   let layout = localStorage.getItem('bhtop_layout') || 'card'
+  let noc = +(localStorage.getItem('bhtop_noc') ?? 0) // 0 = NoC0 only, 1 = NoC1 only, 2 = both
   let align = false
   let box = null // [x0,y0,x1,y1] live calibration of the package footprint (card layout)
 
@@ -27,6 +28,7 @@
   $: if (fp && box === null) box = JSON.parse(localStorage.getItem('bhtop_cal') || 'null') || [...img.package]
   $: if (box) localStorage.setItem('bhtop_cal', JSON.stringify(box))
   $: localStorage.setItem('bhtop_layout', layout)
+  $: localStorage.setItem('bhtop_noc', noc)
 
   $: lod = scale >= 4.5 ? 'high' : scale >= 2 ? 'mid' : 'low'
   $: sw = 1 / scale
@@ -77,12 +79,16 @@
   function linkAct(r, noc) { return Math.max(bw(r.l.a, noc), bw(r.l.b, noc)) / maxBW }
   function safe(t) { return fp.safe_kinds.includes(t.kind) }
   function outline(t) { const c = fp.kind_rgb[t.kind] || [120, 120, 140]; return `rgb(${c[0]},${c[1]},${c[2]})` }
+  // glow only the selected NoC's NIU (purple=NoC0, cyan=NoC1) so one network reads at a time
   function fill(t) {
-    const a0 = bw(t, 0) / maxBW, a1 = bw(t, 1) / maxBW
+    const a0 = noc === 1 ? 0 : bw(t, 0) / maxBW
+    const a1 = noc === 0 ? 0 : bw(t, 1) / maxBW
     const r = 18 + 180 * a0 + 60 * a1, g = 20 + 120 * a0 + 214 * a1, b = 28 + 255 * a0 + 224 * a1
     return `rgb(${Math.min(255, r) | 0},${Math.min(255, g) | 0},${Math.min(255, b) | 0})`
   }
-  function fillOp(t) { return safe(t) ? 0.4 + 0.5 * ((bw(t, 0) + bw(t, 1)) / maxBW) : 0.32 }
+  function selBW(t) { return noc === 0 ? bw(t, 0) : noc === 1 ? bw(t, 1) : bw(t, 0) + bw(t, 1) }
+  function fillOp(t) { return safe(t) ? 0.4 + 0.5 * (selBW(t) / maxBW) : 0.32 }
+  function mb(v) { return v >= 1e6 ? (v / 1e6).toFixed(0) : v >= 1e3 ? (v / 1e3).toFixed(0) + 'k' : '0' }
 
   // ---- zoom / pan ----
   function clamp() {
@@ -152,17 +158,22 @@
           <rect x="0" y="0" width={view.w} height={view.h} fill="#0a0c10" />
         {/if}
 
-        <!-- accurate routing rails: NoC0 purple (a→b, E/S), NoC1 cyan (b→a, W/N); wraps dashed in topo -->
-        {#if lod !== 'low' || layout === 'topo'}
+        <!-- accurate routing rails: NoC0 purple (a→b, E/S), NoC1 cyan (b→a, W/N); wraps dashed in topo.
+             single-NoC selection shows rails at any zoom so the interleave + wrap read clearly -->
+        {#if noc !== 2 || lod !== 'low' || layout === 'topo'}
           {#each rails as r}
-            <line x1={r.x0a} y1={r.y0a} x2={r.x0b} y2={r.y0b} stroke={NOC0}
-              stroke-width={sw * 1.3} stroke-linecap="round" marker-end="url(#a0)"
-              stroke-dasharray={r.l.wrap && layout === 'topo' ? sw * 5 : 0}
-              opacity={(r.l.wrap && layout === 'topo' ? 0.06 : 0.14) + 0.85 * linkAct(r, 0)} />
-            <line x1={r.x1b} y1={r.y1b} x2={r.x1a} y2={r.y1a} stroke={NOC1}
-              stroke-width={sw * 1.3} stroke-linecap="round" marker-end="url(#a1)"
-              stroke-dasharray={r.l.wrap && layout === 'topo' ? sw * 5 : 0}
-              opacity={(r.l.wrap && layout === 'topo' ? 0.06 : 0.14) + 0.85 * linkAct(r, 1)} />
+            {#if noc !== 1}
+              <line x1={r.x0a} y1={r.y0a} x2={r.x0b} y2={r.y0b} stroke={NOC0}
+                stroke-width={sw * 1.3} stroke-linecap="round" marker-end="url(#a0)"
+                stroke-dasharray={r.l.wrap && layout === 'topo' ? sw * 5 : 0}
+                opacity={(r.l.wrap && layout === 'topo' ? 0.08 : 0.16) + 0.82 * linkAct(r, 0)} />
+            {/if}
+            {#if noc !== 0}
+              <line x1={r.x1b} y1={r.y1b} x2={r.x1a} y2={r.y1a} stroke={NOC1}
+                stroke-width={sw * 1.3} stroke-linecap="round" marker-end="url(#a1)"
+                stroke-dasharray={r.l.wrap && layout === 'topo' ? sw * 5 : 0}
+                opacity={(r.l.wrap && layout === 'topo' ? 0.08 : 0.16) + 0.82 * linkAct(r, 1)} />
+            {/if}
           {/each}
         {/if}
 
@@ -175,12 +186,14 @@
             on:mouseenter={() => (hovered = t)} on:mouseleave={() => (hovered = null)} on:click={() => open(t)} />
         {/each}
 
-        {#if lod === 'high' || layout === 'topo'}
+        {#if lod === 'high' || (layout === 'topo' && scale >= 1.5)}
           {#each fp.tiles as t (tileKey(t.noc0))}
             {@const p = pos(t)}
-            <text x={p.x + p.w / 2} y={p.y + p.h * 0.42} font-size={sw * 6.5} fill="#fff" text-anchor="middle" class="lbl">{t.label}</text>
+            <text x={p.x + p.w / 2} y={p.y + p.h * 0.36} font-size={sw * 5.5} fill="#fff" text-anchor="middle" dominant-baseline="central" class="lbl">{t.label}</text>
             {#if safe(t)}
-              <text x={p.x + p.w / 2} y={p.y + p.h * 0.8} font-size={sw * 5} text-anchor="middle" class="lbl"><tspan fill={NOC0}>{(bw(t, 0) / 1e6).toFixed(0)}</tspan><tspan fill="#666">/</tspan><tspan fill={NOC1}>{(bw(t, 1) / 1e6).toFixed(0)}</tspan></text>
+              <text x={p.x + p.w / 2} y={p.y + p.h * 0.68} font-size={sw * 5} text-anchor="middle" dominant-baseline="central" class="lbl">
+                {#if noc === 2}<tspan fill={NOC0}>{mb(bw(t, 0))}</tspan><tspan fill="#555">/</tspan><tspan fill={NOC1}>{mb(bw(t, 1))}</tspan>{:else}<tspan fill={noc === 1 ? NOC1 : NOC0}>{mb(selBW(t))}</tspan>{/if}
+              </text>
             {/if}
           {/each}
         {/if}
@@ -207,9 +220,12 @@
         {#if layout === 'card'}<button class:on={align} on:click={() => (align = !align)}>align</button>{/if}
       </div>
       <div class="legend">
-        <span class="lg"><i style="background:{NOC0}"></i>NoC0 ▸▾</span>
-        <span class="lg"><i style="background:{NOC1}"></i>NoC1 ◂▴</span>
-        <span class="muted">{layout === 'topo' ? 'noc0 torus — dashed = wrap edge' : lod === 'low' ? 'zoom in for routing' : 'routing rails on'}</span>
+        <div class="seg">
+          <button class:on={noc === 0} on:click={() => (noc = 0)}><i style="background:{NOC0}"></i>NoC0</button>
+          <button class:on={noc === 1} on:click={() => (noc = 1)}><i style="background:{NOC1}"></i>NoC1</button>
+          <button class:on={noc === 2} on:click={() => (noc = 2)}>both</button>
+        </div>
+        <span class="muted">{noc === 2 ? 'both NoCs' : noc === 0 ? 'NoC0 ▸▾ east+south' : 'NoC1 ◂▴ west+north'} · {layout === 'topo' ? 'dashed = wrap' : 'interleave + wrap'}</span>
       </div>
       {#if align && layout === 'card'}
         <div class="cal">
