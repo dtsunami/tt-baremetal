@@ -4,6 +4,17 @@ export async function getJSON(path) {
   return r.json()
 }
 
+export async function postJSON(path, body) {
+  const r = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body ?? {}),
+  })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(data.detail || `${path}: ${r.status}`)
+  return data
+}
+
 export function fmtBW(b) {
   if (!b) return '0'
   if (b >= 1e9) return (b / 1e9).toFixed(2) + ' GB/s'

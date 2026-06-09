@@ -14,6 +14,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .device import DeviceManager, CARD_PATH
+from .schemas import InjectRequest
+from ..patterns import PATTERN_INFO
 
 app = FastAPI(title="bhtop-web")
 dm = DeviceManager()
@@ -49,6 +51,23 @@ async def tile(x: int, y: int):
     if d is None:
         raise HTTPException(404, f"no tile at noc0 ({x},{y})")
     return d
+
+
+@app.get("/api/inject/patterns")
+async def inject_patterns():
+    return PATTERN_INFO
+
+
+@app.post("/api/inject")
+async def inject(req: InjectRequest):
+    if dm.reset_needed:
+        raise HTTPException(409, "NoC hang pending — run `tt-smi -r 0` and restart the server")
+    return await dm.inject(req.src, req.pattern, req.length, req.fires, req.stream)
+
+
+@app.post("/api/inject/stop")
+async def inject_stop():
+    return await dm.inject_stop()
 
 
 @app.websocket("/ws/telemetry")

@@ -41,23 +41,7 @@ DRAM_RGB = (150, 205, 170)
 NOC0_C, NOC1_C = NOC0_COL, NOC1_COL     # NoC0 purple (E+S) · NoC1 cyan (W+N)
 
 
-def _ring(cells, center, lo, hi):
-    """Tensix tiles whose Manhattan distance from center is in [lo,hi]."""
-    cx, cy = center
-    out = []
-    for dx in range(-hi, hi + 1):
-        for dy in range(-hi, hi + 1):
-            d = abs(dx) + abs(dy)
-            if lo <= d <= hi:
-                t = cells.get((cx + dx, cy + dy))
-                if t and t.kind == "tensix":
-                    out.append(t)
-    return out
-
-
-def _pt(cells, center_tile, off):
-    d = cells.get((center_tile.noc0[0] + off[0], center_tile.noc0[1] + off[1]))
-    return [(center_tile, d)] if (d and d.kind == "tensix") else []
+from .patterns import ring as _ring, point as _pt   # shared with web.device
 
 
 # (name, fn(center_tile, cells)->[(src,dst)], toggle-key, colour)

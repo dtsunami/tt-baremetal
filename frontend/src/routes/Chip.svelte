@@ -1,7 +1,7 @@
 <script>
   import { push } from 'svelte-spa-router'
   import { floorplan, frame } from '../lib/stores.js'
-  import { fmtBW, tileKey } from '../lib/api.js'
+  import { fmtBW, tileKey, getJSON, postJSON } from '../lib/api.js'
 
   const NOC0 = '#c08cff' // purple — routes east + south (+ wrap)
   const NOC1 = '#5fe6f0' // cyan   — routes west + north (+ wrap)
@@ -114,8 +114,37 @@
   }
   function onUp() { dragging = false }
   function reset() { scale = 1; tx = 0; ty = 0 }
-  function open(t) { if (!moved) push(`/tile/${t.noc0[0]}/${t.noc0[1]}`) }
+  function open(t) {
+    if (moved) return
+    if (pickMode) { if (t.kind === 'tensix') { injSrc = [...t.noc0]; pickMode = false } return }
+    push(`/tile/${t.noc0[0]}/${t.noc0[1]}`)
+  }
   function setLayout(l) { layout = l; reset() }
+
+  // ---- injection ----
+  let injectOpen = false, pickMode = false
+  let injSrc = null            // [x,y] noc0 source tensix
+  let patterns = []
+  let pattern = 'gddr6_write'
+  let lengthMB = 0.25, fires = 3, stream = true
+  let injBusy = false, injErr = null, injResult = null
+  getJSON('/api/inject/patterns').then((p) => (patterns = p)).catch(() => {})
+  $: streaming = $frame?.inject?.streaming
+  $: srcTile = injSrc && fp ? fp.tiles.find((t) => t.noc0[0] === injSrc[0] && t.noc0[1] === injSrc[1]) : null
+
+  async function fire() {
+    if (!injSrc) { injErr = 'pick a source tensix tile first'; return }
+    injBusy = true; injErr = null
+    try {
+      const r = await postJSON('/api/inject', { src: injSrc, pattern, length: Math.round(lengthMB * 1048576), fires, stream })
+      injResult = r.ok ? r : null
+      if (!r.ok) injErr = r.error || 'inject failed'
+    } catch (e) { injErr = e.message } finally { injBusy = false }
+  }
+  async function stopInject() {
+    injBusy = true
+    try { await postJSON('/api/inject/stop'); injResult = null } catch (e) { injErr = e.message } finally { injBusy = false }
+  }
 
   // ---- calibration (card layout) ----
   function onKey(e) {
@@ -193,6 +222,13 @@
             on:mouseenter={() => (hovered = t)} on:mouseleave={() => (hovered = null)} on:click={() => open(t)} />
         {/each}
 
+        {#if srcTile}
+          {@const p = pos(srcTile)}
+          <rect x={p.x - p.w * 0.18} y={p.y - p.h * 0.18} width={p.w * 1.36} height={p.h * 1.36}
+            rx={p.w * 0.22} fill="none" stroke="#ffd24a" stroke-width={sw * 2.6}
+            class="srcmark" filter="url(#glow)" />
+        {/if}
+
         {#if lod === 'high' || (layout === 'topo' && scale >= 1.5)}
           {#each fp.tiles as t (tileKey(t.noc0))}
             {@const p = pos(t)}
@@ -213,6 +249,56 @@
         noc0 {hovered.noc0[0]},{hovered.noc0[1]} · die {hovered.die[0]},{hovered.die[1]}
         {#if hovered.dram_ctrl !== null}<br />GDDR6 d{hovered.dram_ctrl}{/if}<br />
         {#if safe(hovered)}<span style="color:{NOC0}">NoC0 {fmtBW(bw(hovered, 0))}</span> · <span style="color:{NOC1}">NoC1 {fmtBW(bw(hovered, 1))}</span>{:else}<span class="muted">not polled (mgmt)</span>{/if}
+      </div>
+    {/if}
+
+    <!-- inject panel -->
+    <button class="inject-toggle" class:on={injectOpen} on:click={() => (injectOpen = !injectOpen)}>⚡ inject</button>
+    {#if injectOpen}
+      <div class="inject">
+        <div class="ihead"><b>inject traffic</b> <span class="muted">host-driven · NoC routing</span></div>
+
+        <label class="fld">source
+          <span class="src">
+            {#if injSrc}<b>tensix {injSrc[0]},{injSrc[1]}</b>{:else}<span class="muted">none</span>{/if}
+            <button class:on={pickMode} on:click={() => (pickMode = !pickMode)}>{pickMode ? 'click a tile…' : 'pick'}</button>
+          </span>
+        </label>
+
+        <label class="fld">pattern
+          <select bind:value={pattern}>
+            {#each patterns as p}<option value={p.id}>{p.label}</option>{/each}
+          </select>
+        </label>
+
+        <div class="params">
+          <label>len MB<input type="number" step="0.05" min="0.01" bind:value={lengthMB} /></label>
+          <label>fires<input type="number" min="1" bind:value={fires} /></label>
+          <label class="chk"><input type="checkbox" bind:checked={stream} />stream</label>
+        </div>
+
+        <div class="acts">
+          <button class="fire" on:click={fire} disabled={injBusy || !injSrc}>{streaming ? 're-fire' : 'fire'}</button>
+          <button on:click={stopInject} disabled={injBusy || !streaming}>stop</button>
+          {#if streaming}<span class="streaming">● streaming</span>{/if}
+        </div>
+
+        {#if injErr}<div class="ierr">{injErr}</div>{/if}
+        {#if injResult}
+          <div class="ires">
+            moved <b>{fmtBW(injResult.moved_bytes / (injResult.secs || 1))}</b>
+            · {(injResult.moved_bytes / 1e6).toFixed(2)} MB in {(injResult.secs * 1000).toFixed(1)} ms
+            <table class="dram">
+              <thead><tr><th>GDDR6</th><th class="num">NoC0</th><th class="num">NoC1</th></tr></thead>
+              <tbody>
+                {#each Object.entries(injResult.dram) as [c, d]}
+                  <tr><th>d{c}</th><td class="num" style="color:{NOC0}">{(d['0'] * 64 / 1e3).toFixed(0)}k</td><td class="num" style="color:{NOC1}">{(d['1'] * 64 / 1e3).toFixed(0)}k</td></tr>
+                {/each}
+              </tbody>
+            </table>
+            <span class="muted">bytes landed per controller · watch the rails light up live</span>
+          </div>
+        {/if}
       </div>
     {/if}
 
@@ -280,4 +366,39 @@
   .nums label { display: flex; flex-direction: column; color: var(--muted); font-size: 11px; gap: 2px; }
   .nums input { width: 56px; background: var(--panel2); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; font: inherit; }
   .loading { display: grid; place-items: center; height: 100%; color: var(--muted); }
+
+  .srcmark { animation: pulse 1.3s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { stroke-opacity: 1; } 50% { stroke-opacity: 0.35; } }
+
+  .inject-toggle {
+    position: absolute; top: 12px; right: 12px; z-index: 6;
+    background: var(--panel2); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 11px; cursor: pointer; font: inherit;
+  }
+  .inject-toggle.on { background: var(--accent); color: #1a1206; border-color: var(--accent); }
+  .inject {
+    position: absolute; top: 48px; right: 12px; z-index: 6; width: 270px;
+    background: #0d0f14f2; border: 1px solid var(--line); border-radius: 8px;
+    padding: 11px 13px; display: flex; flex-direction: column; gap: 9px; font-size: 12px;
+  }
+  .ihead { display: flex; justify-content: space-between; align-items: baseline; }
+  .fld { display: flex; flex-direction: column; gap: 4px; color: var(--muted); }
+  .src { display: flex; align-items: center; gap: 8px; color: var(--fg); }
+  .inject select, .inject input { background: var(--panel2); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 3px 5px; font: inherit; }
+  .inject button { background: var(--panel2); color: var(--fg); border: 1px solid var(--line); border-radius: 5px; padding: 3px 10px; cursor: pointer; font: inherit; }
+  .inject button.on { background: var(--accent); color: #1a1206; border-color: var(--accent); }
+  .inject button:disabled { opacity: 0.4; cursor: default; }
+  .params { display: flex; gap: 8px; }
+  .params label { display: flex; flex-direction: column; gap: 3px; color: var(--muted); font-size: 11px; }
+  .params input { width: 56px; }
+  .params .chk { flex-direction: row; align-items: center; gap: 4px; align-self: end; }
+  .acts { display: flex; align-items: center; gap: 8px; }
+  .acts .fire { background: var(--accent); color: #1a1206; border-color: var(--accent); font-weight: 600; }
+  .streaming { color: var(--good); animation: pulse 1.3s infinite; }
+  .ierr { color: var(--bad); background: #3a1f23; border-radius: 4px; padding: 5px 7px; }
+  .ires { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--line); padding-top: 8px; }
+  .ires b { color: var(--accent); }
+  table.dram { border-collapse: collapse; }
+  table.dram th, table.dram td { padding: 1px 8px 1px 0; }
+  table.dram .num { text-align: right; font-variant-numeric: tabular-nums; }
 </style>
