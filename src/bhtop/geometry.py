@@ -192,7 +192,7 @@ def physical_link_hops(fp):
 # live overlay visibly drifts off the package. (x0, y0, x1, y1).
 CARD_IMAGE = "blackhole_card.png"
 CARD_IMAGE_PX = (2263, 961)
-CARD_PACKAGE_PX = (1050, 265, 1415, 630)
+CARD_PACKAGE_PX = (1034, 281, 1399, 646)
 CARD_ORIENT = 90   # die mounted rotated 90° on the card (DRAM top/bottom, Eth left)
 
 
