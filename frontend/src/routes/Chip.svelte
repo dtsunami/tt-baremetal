@@ -3,9 +3,9 @@
   import { floorplan, frame } from '../lib/stores.js'
   import { fmtBW, tileKey } from '../lib/api.js'
 
-  const NOC0 = '#b478ff' // purple — routes east + south (+ wrap)
-  const NOC1 = '#4fd6e0' // cyan   — routes west + north (+ wrap)
-  const CELL = 40, PAD = 26
+  const NOC0 = '#c08cff' // purple — routes east + south (+ wrap)
+  const NOC1 = '#5fe6f0' // cyan   — routes west + north (+ wrap)
+  const CELL = 54, PAD = 32
 
   let svgEl
   let scale = 1, tx = 0, ty = 0
@@ -145,8 +145,12 @@
       on:wheel={onWheel} on:mousedown={onDown} on:mousemove={onMove} on:mouseup={onUp} on:mouseleave={onUp}
     >
       <defs>
-        <marker id="a0" markerWidth="4" markerHeight="4" refX="3.2" refY="2" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L4,2 L0,4 z" fill={NOC0} /></marker>
-        <marker id="a1" markerWidth="4" markerHeight="4" refX="3.2" refY="2" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L4,2 L0,4 z" fill={NOC1} /></marker>
+        <marker id="a0" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L7,3 L0,6 z" fill={NOC0} /></marker>
+        <marker id="a1" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L7,3 L0,6 z" fill={NOC1} /></marker>
+        <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+          <feGaussianBlur stdDeviation={0.9 / scale} result="b" />
+          <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
+        </filter>
       </defs>
 
       <g transform="translate({tx} {ty}) scale({scale})">
@@ -161,27 +165,30 @@
         <!-- accurate routing rails: NoC0 purple (a→b, E/S), NoC1 cyan (b→a, W/N); wraps dashed in topo.
              single-NoC selection shows rails at any zoom so the interleave + wrap read clearly -->
         {#if noc !== 2 || lod !== 'low' || layout === 'topo'}
-          {#each rails as r}
-            {#if noc !== 1}
-              <line x1={r.x0a} y1={r.y0a} x2={r.x0b} y2={r.y0b} stroke={NOC0}
-                stroke-width={sw * 1.3} stroke-linecap="round" marker-end="url(#a0)"
-                stroke-dasharray={r.l.wrap && layout === 'topo' ? sw * 5 : 0}
-                opacity={(r.l.wrap && layout === 'topo' ? 0.08 : 0.16) + 0.82 * linkAct(r, 0)} />
-            {/if}
-            {#if noc !== 0}
-              <line x1={r.x1b} y1={r.y1b} x2={r.x1a} y2={r.y1a} stroke={NOC1}
-                stroke-width={sw * 1.3} stroke-linecap="round" marker-end="url(#a1)"
-                stroke-dasharray={r.l.wrap && layout === 'topo' ? sw * 5 : 0}
-                opacity={(r.l.wrap && layout === 'topo' ? 0.08 : 0.16) + 0.82 * linkAct(r, 1)} />
-            {/if}
-          {/each}
+          <g filter="url(#glow)">
+            {#each rails as r}
+              {#if noc !== 1}
+                <line x1={r.x0a} y1={r.y0a} x2={r.x0b} y2={r.y0b} stroke={NOC0}
+                  stroke-width={sw * (2 + 3 * linkAct(r, 0))} stroke-linecap="round" marker-end="url(#a0)"
+                  stroke-dasharray={r.l.wrap && layout === 'topo' ? sw * 6 : 0}
+                  opacity={(r.l.wrap && layout === 'topo' ? 0.14 : 0.3) + 0.7 * linkAct(r, 0)} />
+              {/if}
+              {#if noc !== 0}
+                <line x1={r.x1b} y1={r.y1b} x2={r.x1a} y2={r.y1a} stroke={NOC1}
+                  stroke-width={sw * (2 + 3 * linkAct(r, 1))} stroke-linecap="round" marker-end="url(#a1)"
+                  stroke-dasharray={r.l.wrap && layout === 'topo' ? sw * 6 : 0}
+                  opacity={(r.l.wrap && layout === 'topo' ? 0.14 : 0.3) + 0.7 * linkAct(r, 1)} />
+              {/if}
+            {/each}
+          </g>
         {/if}
 
         {#each fp.tiles as t (tileKey(t.noc0))}
           {@const p = pos(t)}
-          <rect x={p.x} y={p.y} width={p.w} height={p.h}
+          <rect x={p.x} y={p.y} width={p.w} height={p.h} rx={Math.min(p.w, p.h) * 0.16}
             fill={fill(t)} fill-opacity={fillOp(t)} stroke={outline(t)}
-            stroke-width={sw * 1.4} stroke-opacity={safe(t) ? 0.95 : 0.45}
+            stroke-width={sw * (safe(t) ? 2.2 : 1.4)} stroke-opacity={safe(t) ? 1 : 0.5}
+            filter={safe(t) && selBW(t) / maxBW > 0.04 ? 'url(#glow)' : null}
             class="tile" class:safe={safe(t)}
             on:mouseenter={() => (hovered = t)} on:mouseleave={() => (hovered = null)} on:click={() => open(t)} />
         {/each}
