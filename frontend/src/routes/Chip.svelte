@@ -3,8 +3,8 @@
   import { floorplan, frame } from '../lib/stores.js'
   import { fmtBW, tileKey, getJSON, postJSON } from '../lib/api.js'
 
-  const NOC0 = '#c08cff' // purple — routes east + south (+ wrap)
-  const NOC1 = '#5fe6f0' // cyan   — routes west + north (+ wrap)
+  const NOC0 = '#cf83ff' // purple — routes east + south (+ wrap)
+  const NOC1 = '#36ecff' // cyan   — routes west + north (+ wrap)
   const CELL = 54, PAD = 32
 
   let svgEl
@@ -62,16 +62,26 @@
     }
     return out
   }
+  // straight for interior links; bowed arc for torus WRAP links (so wraparound reads)
+  function railPath(xa, ya, xb, yb, wrap) {
+    if (!wrap) return `M${xa},${ya} L${xb},${yb}`
+    const mx = (xa + xb) / 2, my = (ya + yb) / 2
+    const ux = xb - xa, uy = yb - ya, L = Math.hypot(ux, uy) || 1
+    const px = -uy / L, py = ux / L, bow = Math.max(L * 0.33, Math.min(view.w, view.h) * 0.04)
+    return `M${xa},${ya} Q${mx + px * bow},${my + py * bow} ${xb},${yb}`
+  }
   // rail geometry (recomputes on layout/calibration change, not per frame)
   $: rails = box
     ? adj.map((l) => {
         const ca = pos(l.a), cb = pos(l.b)
         const ax = ca.x + ca.w / 2, ay = ca.y + ca.h / 2, bx = cb.x + cb.w / 2, by = cb.y + cb.h / 2
         const ux = bx - ax, uy = by - ay, L = Math.hypot(ux, uy) || 1
-        const px = -uy / L, py = ux / L, o = Math.min(ca.w, ca.h) * 0.17
-        return { l, ax, ay, bx, by,
-          x0a: ax + px * o, y0a: ay + py * o, x0b: bx + px * o, y0b: by + py * o,
-          x1a: ax - px * o, y1a: ay - py * o, x1b: bx - px * o, y1b: by - py * o }
+        const px = -uy / L, py = ux / L, o = Math.min(ca.w, ca.h) * 0.18
+        return {
+          l,
+          d0: railPath(ax + px * o, ay + py * o, bx + px * o, by + py * o, l.wrap), // NoC0 a→b
+          d1: railPath(bx - px * o, by - py * o, ax - px * o, ay - py * o, l.wrap), // NoC1 b→a
+        }
       })
     : []
 
@@ -162,6 +172,12 @@
   function resetCal() { box = [...img.package] }
 
   $: hoverBW = hovered ? (() => { const f = ftiles[tileKey(hovered.noc0)]; return f ? (f.noc0 || 0) + (f.noc1 || 0) : 0 })() : 0
+
+  // ---- DRAM dashboard + PCIe ----
+  $: dramInfo = fp?.dram          // {ctrls, per_ctrl_gib, total_gib}
+  $: pcieInfo = fp?.pcie          // {link, gbps_per_dir}
+  $: dramBW = $frame?.dram ?? {}  // {ctrl: {r, w}} bytes/s
+  $: dramMax = Math.max(2e6, ...Object.values(dramBW).flatMap((d) => [d.r || 0, d.w || 0]))
 </script>
 
 <svelte:window on:keydown={onKey} />
@@ -194,22 +210,18 @@
         <!-- accurate routing rails: NoC0 purple (a→b, E/S), NoC1 cyan (b→a, W/N); wraps dashed in topo.
              single-NoC selection shows rails at any zoom so the interleave + wrap read clearly -->
         {#if noc !== 2 || lod !== 'low' || layout === 'topo'}
-          <g filter="url(#glow)">
-            {#each rails as r}
-              {#if noc !== 1}
-                <line x1={r.x0a} y1={r.y0a} x2={r.x0b} y2={r.y0b} stroke={NOC0}
-                  stroke-width={sw * (2 + 3 * linkAct(r, 0))} stroke-linecap="round" marker-end="url(#a0)"
-                  stroke-dasharray={r.l.wrap && layout === 'topo' ? sw * 6 : 0}
-                  opacity={(r.l.wrap && layout === 'topo' ? 0.14 : 0.3) + 0.7 * linkAct(r, 0)} />
-              {/if}
-              {#if noc !== 0}
-                <line x1={r.x1b} y1={r.y1b} x2={r.x1a} y2={r.y1a} stroke={NOC1}
-                  stroke-width={sw * (2 + 3 * linkAct(r, 1))} stroke-linecap="round" marker-end="url(#a1)"
-                  stroke-dasharray={r.l.wrap && layout === 'topo' ? sw * 6 : 0}
-                  opacity={(r.l.wrap && layout === 'topo' ? 0.14 : 0.3) + 0.7 * linkAct(r, 1)} />
-              {/if}
-            {/each}
-          </g>
+          {#each rails as r}
+            {#if noc !== 1}
+              {@const a = linkAct(r, 0)}
+              <path d={r.d0} fill="none" stroke="#05060a" stroke-width={sw * (4 + 3.5 * a)} stroke-opacity="0.75" stroke-linecap="round" stroke-dasharray={r.l.wrap ? sw * 5 : 0} />
+              <path d={r.d0} fill="none" stroke={NOC0} stroke-width={sw * (2.4 + 3.5 * a)} stroke-linecap="round" marker-end="url(#a0)" stroke-dasharray={r.l.wrap ? sw * 5 : 0} opacity={(r.l.wrap ? 0.6 : 0.48) + 0.52 * a} />
+            {/if}
+            {#if noc !== 0}
+              {@const a = linkAct(r, 1)}
+              <path d={r.d1} fill="none" stroke="#05060a" stroke-width={sw * (4 + 3.5 * a)} stroke-opacity="0.75" stroke-linecap="round" stroke-dasharray={r.l.wrap ? sw * 5 : 0} />
+              <path d={r.d1} fill="none" stroke={NOC1} stroke-width={sw * (2.4 + 3.5 * a)} stroke-linecap="round" marker-end="url(#a1)" stroke-dasharray={r.l.wrap ? sw * 5 : 0} opacity={(r.l.wrap ? 0.6 : 0.48) + 0.52 * a} />
+            {/if}
+          {/each}
         {/if}
 
         {#each fp.tiles as t (tileKey(t.noc0))}
@@ -302,6 +314,31 @@
       </div>
     {/if}
 
+    <!-- DRAM dashboard: 8 GDDR6 banks (capacity + live R/W) + PCIe host link -->
+    {#if dramInfo}
+      <div class="dram-bar">
+        <div class="banks">
+          {#each dramInfo.ctrls as c}
+            {@const d = dramBW[String(c)] ?? { r: 0, w: 0 }}
+            {@const act = (d.r + d.w) / dramMax}
+            <div class="bank" class:hot={act > 0.05} title="GDDR6 d{c} — read {fmtBW(d.r)} · write {fmtBW(d.w)}">
+              <div class="bars">
+                <div class="bar r" style="height:{Math.max(3, (d.r / dramMax) * 100)}%"></div>
+                <div class="bar w" style="height:{Math.max(3, (d.w / dramMax) * 100)}%"></div>
+              </div>
+              <div class="cap">{dramInfo.per_ctrl_gib}G</div>
+              <div class="bid">d{c}</div>
+            </div>
+          {/each}
+        </div>
+        <div class="dram-meta">
+          <div class="tot">GDDR6 · <b>{dramInfo.total_gib} GiB</b></div>
+          <div class="rwkey"><i class="r"></i>read <i class="w"></i>write</div>
+          {#if pcieInfo}<div class="pcie">host · PCIe <b>{pcieInfo.link}</b> <span class="muted">~{pcieInfo.gbps_per_dir} GB/s</span></div>{/if}
+        </div>
+      </div>
+    {/if}
+
     <div class="hud">
       <div class="row">
         <div class="seg">
@@ -351,7 +388,31 @@
   .muted { color: var(--muted); }
   kbd { background: var(--panel2); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; }
 
-  .hud { position: absolute; left: 12px; bottom: 12px; z-index: 4; background: #0d0f14e6; border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; display: flex; flex-direction: column; gap: 8px; font-size: 12px; max-width: 380px; }
+  .dram-bar {
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 4;
+    display: flex; align-items: flex-end; gap: 16px;
+    background: linear-gradient(transparent, #0a0c10ee 45%); padding: 18px 16px 8px;
+    pointer-events: none;
+  }
+  .dram-bar > * { pointer-events: auto; }
+  .banks { display: flex; gap: 5px; align-items: flex-end; }
+  .bank { width: 30px; display: flex; flex-direction: column; align-items: center; gap: 2px; background: #14171dcc; border: 1px solid var(--line); border-radius: 4px; padding: 4px 2px; }
+  .bank.hot { border-color: var(--accent); box-shadow: 0 0 8px #ff8a4c66; }
+  .bars { display: flex; gap: 2px; align-items: flex-end; height: 34px; }
+  .bar { width: 6px; border-radius: 2px 2px 0 0; min-height: 3px; transition: height 0.25s; }
+  .bar.r { background: var(--good); }
+  .bar.w { background: var(--accent); }
+  .bank .cap { font-size: 9px; color: var(--muted); }
+  .bank .bid { font-size: 10px; color: var(--fg); }
+  .dram-meta { display: flex; flex-direction: column; gap: 3px; font-size: 12px; padding-bottom: 6px; }
+  .dram-meta .tot b { color: var(--good); }
+  .rwkey { color: var(--muted); display: flex; align-items: center; gap: 5px; }
+  .rwkey i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+  .rwkey i.r { background: var(--good); }
+  .rwkey i.w { background: var(--accent); margin-left: 6px; }
+  .pcie b { color: var(--noc1); }
+
+  .hud { position: absolute; left: 12px; bottom: 92px; z-index: 4; background: #0d0f14e6; border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; display: flex; flex-direction: column; gap: 8px; font-size: 12px; max-width: 380px; }
   .row { display: flex; align-items: center; gap: 10px; }
   .hud button { background: var(--panel2); color: var(--fg); border: 1px solid var(--line); border-radius: 5px; padding: 2px 9px; cursor: pointer; font: inherit; }
   .hud button.on { background: var(--accent); color: #1a1206; border-color: var(--accent); }

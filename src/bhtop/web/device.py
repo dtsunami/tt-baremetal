@@ -113,9 +113,15 @@ class DeviceManager:
                 "noc1": nc.metric_scalar(b1, "total"),
                 "b0": b0, "b1": b1,
             }
-        dram = {str(c): sum(self.poller.scalar(t, 0, "total") + self.poller.scalar(t, 1, "total")
-                            for t in ts)
-                for c, ts in self.fp.dram_ctrl.items()}
+        dram = {}
+        for c, ts in self.fp.dram_ctrl.items():
+            r = w = 0.0
+            for t in ts:
+                for noc in (0, 1):
+                    b = self.poller.bw.get((t.key, noc), {})
+                    r += b.get("tx_slave", 0.0)   # SLV reads served out of DRAM
+                    w += b.get("rx_slave", 0.0)   # SLV writes landed into DRAM
+            dram[str(c)] = {"r": r, "w": w}
         return {"ts": round(time.monotonic(), 3), "mode": self.mode,
                 "reset_needed": self.reset_needed, "tiles": tiles, "dram": dram,
                 "inject": {"streaming": bool(self._stream),
@@ -206,11 +212,14 @@ class DeviceManager:
                   "label": t.label, "dram_ctrl": t.dram_ctrl,
                   "rect": overlay.get(t.noc0)}
                  for t in self.fp.placed]
+        ctrls = sorted(self.fp.dram_ctrl.keys())
         return {
             "image": {"src": "/api/card.png", "w": G.CARD_IMAGE_PX[0],
                       "h": G.CARD_IMAGE_PX[1], "package": G.CARD_PACKAGE_PX},
             "noc0_dims": [cols, rows], "kind_rgb": KIND_RGB,
             "safe_kinds": sorted(SAFE_KINDS), "tiles": tiles,
+            "dram": {"ctrls": ctrls, "per_ctrl_gib": 4, "total_gib": len(ctrls) * 4},
+            "pcie": {"link": "Gen5 x16", "gbps_per_dir": 63},
         }
 
     def status(self):
