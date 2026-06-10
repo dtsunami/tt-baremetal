@@ -226,13 +226,31 @@
 
         {#each fp.tiles as t (tileKey(t.noc0))}
           {@const p = pos(t)}
-          <rect x={p.x} y={p.y} width={p.w} height={p.h} rx={Math.min(p.w, p.h) * 0.16}
-            fill={fill(t)} fill-opacity={fillOp(t)} stroke={outline(t)}
-            stroke-width={sw * (safe(t) ? 2.2 : 1.4)} stroke-opacity={safe(t) ? 1 : 0.5}
-            filter={safe(t) && selBW(t) / maxBW > 0.04 ? 'url(#glow)' : null}
-            class="tile" class:safe={safe(t)}
-            on:mouseenter={() => (hovered = t)} on:mouseleave={() => (hovered = null)} on:click={() => open(t)} />
+          {#if t.kind === 'empty'}
+            <!-- empty coordinate: router + NIU only (torus passthrough, per tt-isa-doc) -->
+            <rect x={p.x + p.w * 0.28} y={p.y + p.h * 0.28} width={p.w * 0.44} height={p.h * 0.44}
+              rx={p.w * 0.1} fill="#10131a" fill-opacity="0.7" stroke={outline(t)}
+              stroke-width={sw * 1.1} stroke-opacity="0.55" stroke-dasharray={sw * 2.5}
+              class="tile empty"
+              on:mouseenter={() => (hovered = t)} on:mouseleave={() => (hovered = null)} />
+          {:else}
+            <rect x={p.x} y={p.y} width={p.w} height={p.h} rx={Math.min(p.w, p.h) * 0.16}
+              fill={fill(t)} fill-opacity={fillOp(t)} stroke={outline(t)}
+              stroke-width={sw * (safe(t) ? 2.2 : 1.4)} stroke-opacity={safe(t) ? 1 : 0.5}
+              filter={safe(t) && selBW(t) / maxBW > 0.04 ? 'url(#glow)' : null}
+              class="tile" class:safe={safe(t)}
+              on:mouseenter={() => (hovered = t)} on:mouseleave={() => (hovered = null)} on:click={() => open(t)} />
+          {/if}
         {/each}
+
+        <!-- router beads: the wires pass through every router, incl. empty tiles (official style) -->
+        {#if lod !== 'low'}
+          {#each fp.tiles as t (tileKey(t.noc0) + 'r')}
+            {@const p = pos(t)}
+            <circle cx={p.x + p.w / 2} cy={p.y + p.h / 2} r={Math.min(p.w, p.h) * 0.09}
+              fill="#e8ecf4" opacity="0.85" stroke="#05060a" stroke-width={sw * 0.8} class="lbl" />
+          {/each}
+        {/if}
 
         {#if srcTile}
           {@const p = pos(srcTile)}
@@ -244,11 +262,15 @@
         {#if lod === 'high' || (layout === 'topo' && scale >= 1.5)}
           {#each fp.tiles as t (tileKey(t.noc0))}
             {@const p = pos(t)}
-            <text x={p.x + p.w / 2} y={p.y + p.h * 0.36} font-size={sw * 5.5} fill="#fff" text-anchor="middle" dominant-baseline="central" class="lbl">{t.label}</text>
-            {#if safe(t)}
-              <text x={p.x + p.w / 2} y={p.y + p.h * 0.68} font-size={sw * 5} text-anchor="middle" dominant-baseline="central" class="lbl">
-                {#if noc === 2}<tspan fill={NOC0}>{mb(bw(t, 0))}</tspan><tspan fill="#555">/</tspan><tspan fill={NOC1}>{mb(bw(t, 1))}</tspan>{:else}<tspan fill={noc === 1 ? NOC1 : NOC0}>{mb(selBW(t))}</tspan>{/if}
-              </text>
+            {#if t.kind === 'empty'}
+              <text x={p.x + p.w / 2} y={p.y + p.h * 0.5} font-size={sw * 4.5} fill="#69707f" text-anchor="middle" dominant-baseline="central" class="lbl">R·NIU</text>
+            {:else}
+              <text x={p.x + p.w / 2} y={p.y + p.h * 0.36} font-size={sw * 5.5} fill="#fff" text-anchor="middle" dominant-baseline="central" class="lbl">{t.label}</text>
+              {#if safe(t)}
+                <text x={p.x + p.w / 2} y={p.y + p.h * 0.68} font-size={sw * 5} text-anchor="middle" dominant-baseline="central" class="lbl">
+                  {#if noc === 2}<tspan fill={NOC0}>{mb(bw(t, 0))}</tspan><tspan fill="#555">/</tspan><tspan fill={NOC1}>{mb(bw(t, 1))}</tspan>{:else}<tspan fill={noc === 1 ? NOC1 : NOC0}>{mb(selBW(t))}</tspan>{/if}
+                </text>
+              {/if}
             {/if}
           {/each}
         {/if}
@@ -260,7 +282,7 @@
         <b>{hovered.label}</b> · {hovered.kind}<br />
         noc0 {hovered.noc0[0]},{hovered.noc0[1]} · die {hovered.die[0]},{hovered.die[1]}
         {#if hovered.dram_ctrl !== null}<br />GDDR6 d{hovered.dram_ctrl}{/if}<br />
-        {#if safe(hovered)}<span style="color:{NOC0}">NoC0 {fmtBW(bw(hovered, 0))}</span> · <span style="color:{NOC1}">NoC1 {fmtBW(bw(hovered, 1))}</span>{:else}<span class="muted">not polled (mgmt)</span>{/if}
+        {#if safe(hovered)}<span style="color:{NOC0}">NoC0 {fmtBW(bw(hovered, 0))}</span> · <span style="color:{NOC1}">NoC1 {fmtBW(bw(hovered, 1))}</span>{:else if hovered.kind === 'empty'}<span class="muted">empty tile — router + NIU only (torus passthrough)</span>{:else}<span class="muted">not polled (mgmt)</span>{/if}
       </div>
     {/if}
 
@@ -381,6 +403,7 @@
   svg { width: 100%; height: 100%; display: block; cursor: grab; }
   svg.grabbing { cursor: grabbing; }
   .tile { cursor: pointer; }
+  .tile.empty { cursor: default; }
   .tile.safe:hover { stroke: #fff !important; stroke-opacity: 1 !important; }
   .lbl { pointer-events: none; font-family: ui-monospace, monospace; }
 

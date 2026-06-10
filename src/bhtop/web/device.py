@@ -206,17 +206,35 @@ class DeviceManager:
 
     # ---- static model + status (no device read) ---------------------------
     def floorplan_model(self):
-        overlay = G.card_overlay(self.fp)
         cols, rows = G.grid_dims(self.fp, "noc0")
+        # The 2D torus is COMPLETE: coordinates without a functional block still
+        # contain a router + NIU ("empty" tiles, per tt-isa-doc NoC/README — fused
+        # tensix columns, top-row gaps, spine gaps). The rings pass through them
+        # unbroken, so include them; die coords derive from the column/row-uniform
+        # interleave. Never polled (not SAFE_KINDS), drawn dim by the UI.
+        xmap, ymap = {}, {}
+        for t in self.fp.placed:
+            xmap.setdefault(t.noc0[0], t.die[0])
+            ymap.setdefault(t.noc0[1], t.die[1])
+        placed_keys = {t.noc0 for t in self.fp.placed}
+        empties = [((x, y), (xmap[x], ymap[y]))
+                   for x in range(cols) for y in range(rows)
+                   if (x, y) not in placed_keys]
+        overlay = G.card_overlay(self.fp, extra=empties)
         tiles = [{"noc0": list(t.noc0), "die": list(t.die), "kind": t.kind,
                   "label": t.label, "dram_ctrl": t.dram_ctrl,
                   "rect": overlay.get(t.noc0)}
                  for t in self.fp.placed]
+        tiles += [{"noc0": list(k), "die": list(d), "kind": "empty",
+                   "label": f"{k[0]},{k[1]}", "dram_ctrl": None,
+                   "rect": overlay.get(k)}
+                  for k, d in empties]
         ctrls = sorted(self.fp.dram_ctrl.keys())
         return {
             "image": {"src": "/api/card.png", "w": G.CARD_IMAGE_PX[0],
                       "h": G.CARD_IMAGE_PX[1], "package": G.CARD_PACKAGE_PX},
-            "noc0_dims": [cols, rows], "kind_rgb": KIND_RGB,
+            "noc0_dims": [cols, rows],
+            "kind_rgb": {**KIND_RGB, "empty": (95, 100, 112)},
             "safe_kinds": sorted(SAFE_KINDS), "tiles": tiles,
             "dram": {"ctrls": ctrls, "per_ctrl_gib": 4, "total_gib": len(ctrls) * 4},
             "pcie": {"link": "Gen5 x16", "gbps_per_dir": 63},

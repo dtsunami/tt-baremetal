@@ -197,7 +197,7 @@ CARD_PACKAGE_PX = (1046, 271, 1411, 636)
 CARD_ORIENT = 90   # die mounted rotated 90° on the card (DRAM top/bottom, Eth left)
 
 
-def card_overlay(fp, package_px=CARD_PACKAGE_PX, orient=CARD_ORIENT):
+def card_overlay(fp, package_px=CARD_PACKAGE_PX, orient=CARD_ORIENT, extra=()):
     """Map each tile's die coord -> a pixel rect inside the package lid, in card
     orientation. Returns {noc0_key: {x, y, w, h}} (pixels in the card image).
 
@@ -210,10 +210,11 @@ def card_overlay(fp, package_px=CARD_PACKAGE_PX, orient=CARD_ORIENT):
     _, _, w, h = rotate((0, 0), orient, cols, rows)   # rotated grid dims
     cw, ch = (x1 - x0) / w, (y1 - y0) / h
     out = {}
-    for t in fp.placed:
-        rx, ry, _, _ = rotate(t.die, orient, cols, rows)
-        out[t.noc0] = {"x": round(x0 + rx * cw, 1), "y": round(y0 + ry * ch, 1),
-                       "w": round(cw, 1), "h": round(ch, 1)}
+    pairs = [(t.noc0, t.die) for t in fp.placed] + list(extra)
+    for key, die in pairs:
+        rx, ry, _, _ = rotate(die, orient, cols, rows)
+        out[key] = {"x": round(x0 + rx * cw, 1), "y": round(y0 + ry * ch, 1),
+                    "w": round(cw, 1), "h": round(ch, 1)}
     return out
 
 
