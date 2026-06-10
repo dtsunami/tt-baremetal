@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .device import DeviceManager, CARD_PATH
-from .schemas import InjectRequest
+from .schemas import InjectRequest, KernelRunRequest
 from ..patterns import PATTERN_INFO
 
 app = FastAPI(title="bhtop-web")
@@ -62,12 +62,31 @@ async def inject_patterns():
 async def inject(req: InjectRequest):
     if dm.reset_needed:
         raise HTTPException(409, "NoC hang pending — run `tt-smi -r 0` and restart the server")
+    if dm.mode == "busy":
+        raise HTTPException(409, "a tt-metal kernel owns the device — wait for it to finish")
     return await dm.inject(req.src, req.pattern, req.length, req.fires, req.stream)
 
 
 @app.post("/api/inject/stop")
 async def inject_stop():
     return await dm.inject_stop()
+
+
+@app.get("/api/kernels")
+async def kernels():
+    return await dm.kernels()
+
+
+@app.post("/api/kernels/run")
+async def kernels_run(req: KernelRunRequest):
+    if dm.reset_needed:
+        raise HTTPException(409, "NoC hang pending — run `tt-smi -r 0` and restart the server")
+    return await dm.run_kernel(req.name, req.timeout)
+
+
+@app.get("/api/kernels/last")
+async def kernels_last():
+    return dm.kernel_last()
 
 
 @app.websocket("/ws/telemetry")

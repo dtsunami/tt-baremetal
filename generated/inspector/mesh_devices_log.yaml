@@ -1,0 +1,8 @@
+- mesh_device_created:
+    mesh_id: 0
+    timestamp_ns: 1781120756522247878
+    devices: [0]
+    shape: [1, 1]
+- mesh_device_initialized:
+    mesh_id: 0
+    timestamp_ns: 1781120756522971707

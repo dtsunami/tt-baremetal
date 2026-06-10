@@ -23,7 +23,9 @@
   $: cols = fp?.noc0_dims[0] ?? 17
   $: rows = fp?.noc0_dims[1] ?? 12
   $: ftiles = $frame?.tiles ?? {}
-  $: maxBW = Math.max(1, ...Object.values(ftiles).map((t) => (t.noc0 || 0) + (t.noc1 || 0)))
+  $: maxBW = kf
+    ? Math.max(1, ...Object.values(kf['0'] ?? {}), ...Object.values(kf['1'] ?? {}))
+    : Math.max(1, ...Object.values(ftiles).map((t) => (t.noc0 || 0) + (t.noc1 || 0)))
 
   $: if (fp && box === null) box = JSON.parse(localStorage.getItem('bhtop_cal') || 'null') || [...img.package]
   $: if (box) localStorage.setItem('bhtop_cal', JSON.stringify(box))
@@ -85,7 +87,16 @@
       })
     : []
 
-  function bw(t, noc) { const f = ftiles[tileKey(t.noc0)]; return f ? (noc === 0 ? f.noc0 : f.noc1) || 0 : 0 }
+  // kernel footprint overlay: when present, the whole view (fills, rails, labels)
+  // shows the kernel's per-NoC bytes instead of live bandwidth
+  let kernelResult = null
+  $: kf = kernelResult?.foot ?? null
+  function bw(t, noc) {
+    if (kf) return kf[String(noc)]?.[tileKey(t.noc0)] || 0
+    const f = ftiles[tileKey(t.noc0)]
+    return f ? (noc === 0 ? f.noc0 : f.noc1) || 0 : 0
+  }
+  function fmtAmt(v) { return kf ? (v >= 1e9 ? (v / 1e9).toFixed(2) + ' GB' : (v / 1e6).toFixed(1) + ' MB') + ' moved' : fmtBW(v) }
   function linkAct(r, noc) { return Math.max(bw(r.l.a, noc), bw(r.l.b, noc)) / maxBW }
   function safe(t) { return fp.safe_kinds.includes(t.kind) }
   function outline(t) { const c = fp.kind_rgb[t.kind] || [120, 120, 140]; return `rgb(${c[0]},${c[1]},${c[2]})` }
@@ -154,6 +165,31 @@
   async function stopInject() {
     injBusy = true
     try { await postJSON('/api/inject/stop'); injResult = null } catch (e) { injErr = e.message } finally { injBusy = false }
+  }
+
+  // ---- tt-metal kernels ----
+  let kernelsOpen = false, kFilter = ''
+  let kInfo = null            // {available, tests}
+  let kRunning = null, kErr = null
+  $: if (kernelsOpen && !kInfo) getJSON('/api/kernels').then((k) => (kInfo = k)).catch((e) => (kErr = e.message))
+  $: kTests = kInfo?.tests?.filter((t) => t.toLowerCase().includes(kFilter.toLowerCase())) ?? []
+
+  async function runKernel(name) {
+    kRunning = name; kErr = null; kernelResult = null
+    try {
+      const r = await postJSON('/api/kernels/run', { name })
+      if (!r.ok) { kErr = r.error || 'run failed'; kRunning = null; return }
+      // job is async server-side (first-run JIT can take minutes) — poll for the result
+      while (true) {
+        await new Promise((res) => setTimeout(res, 3000))
+        const s = await getJSON('/api/kernels/last')
+        if (!s.running && s.result?.name === name) {
+          if (s.result.ok) kernelResult = s.result
+          else kErr = s.result.error || 'run failed'
+          break
+        }
+      }
+    } catch (e) { kErr = e.message } finally { kRunning = null }
   }
 
   // ---- calibration (card layout) ----
@@ -282,12 +318,52 @@
         <b>{hovered.label}</b> · {hovered.kind}<br />
         noc0 {hovered.noc0[0]},{hovered.noc0[1]} · die {hovered.die[0]},{hovered.die[1]}
         {#if hovered.dram_ctrl !== null}<br />GDDR6 d{hovered.dram_ctrl}{/if}<br />
-        {#if safe(hovered)}<span style="color:{NOC0}">NoC0 {fmtBW(bw(hovered, 0))}</span> · <span style="color:{NOC1}">NoC1 {fmtBW(bw(hovered, 1))}</span>{:else if hovered.kind === 'empty'}<span class="muted">empty tile — router + NIU only (torus passthrough)</span>{:else}<span class="muted">not polled (mgmt)</span>{/if}
+        {#if safe(hovered)}<span style="color:{NOC0}">NoC0 {fmtAmt(bw(hovered, 0))}</span> · <span style="color:{NOC1}">NoC1 {fmtAmt(bw(hovered, 1))}</span>{:else if hovered.kind === 'empty'}<span class="muted">empty tile — router + NIU only (torus passthrough)</span>{:else}<span class="muted">not polled (mgmt)</span>{/if}
       </div>
     {/if}
 
-    <!-- inject panel -->
+    <!-- inject + kernels panels -->
+    <button class="inject-toggle kbtn" class:on={kernelsOpen} on:click={() => (kernelsOpen = !kernelsOpen)}>▶ kernels</button>
     <button class="inject-toggle" class:on={injectOpen} on:click={() => (injectOpen = !injectOpen)}>⚡ inject</button>
+
+    {#if kernelsOpen}
+      <div class="inject kpanel">
+        <div class="ihead"><b>tt-metal kernels</b> <span class="muted">on-chip · real flits</span></div>
+        {#if kInfo && !kInfo.available}
+          <div class="ierr">tt-metal build not found (set TT_METAL_HOME)</div>
+        {:else if !kInfo}
+          <div class="muted">loading test list…</div>
+        {:else}
+          <input class="kfilter" placeholder="filter {kInfo.tests.length} tests…" bind:value={kFilter} />
+          <div class="klist">
+            {#each kTests as t}
+              <div class="kitem">
+                <span class="kname" title={t}>{t.replace('TensixDataMovement', '')}</span>
+                <button on:click={() => runKernel(t)} disabled={!!kRunning}>run</button>
+              </div>
+            {/each}
+          </div>
+          {#if kRunning}
+            <div class="krunning">● running <b>{kRunning.replace('TensixDataMovement', '')}</b> — device owned by tt-metal, polling paused…</div>
+          {/if}
+          {#if kErr}<div class="ierr">{kErr}</div>{/if}
+          {#if kernelResult}
+            <div class="ires">
+              <div>
+                {kernelResult.passed ? '✔' : '✘'} <b>{kernelResult.name.replace('TensixDataMovement', '')}</b>
+                · {kernelResult.secs}s
+                {#if kernelResult.agg}
+                  <br />profiler: <b>{(kernelResult.agg.bw / 1e12).toFixed(2)} TB/s</b>
+                  · {kernelResult.agg.cores} cores · {(kernelResult.agg.total_bytes / 1e9).toFixed(2)} GB
+                {/if}
+              </div>
+              <span class="muted">chip shows the kernel's per-NoC silicon footprint (flip NoC0/NoC1)</span>
+              <button on:click={() => (kernelResult = null)}>clear footprint → live view</button>
+            </div>
+          {/if}
+        {/if}
+      </div>
+    {/if}
     {#if injectOpen}
       <div class="inject">
         <div class="ihead"><b>inject traffic</b> <span class="muted">host-driven · NoC routing</span></div>
@@ -460,6 +536,13 @@
     border-radius: 6px; padding: 5px 11px; cursor: pointer; font: inherit;
   }
   .inject-toggle.on { background: var(--accent); color: #1a1206; border-color: var(--accent); }
+  .kbtn { right: 96px; }
+  .kpanel { width: 330px; }
+  .kfilter { width: 100%; }
+  .klist { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+  .kitem { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 1px 0; }
+  .kname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+  .krunning { color: var(--accent); animation: pulse 1.3s infinite; }
   .inject {
     position: absolute; top: 48px; right: 12px; z-index: 6; width: 270px;
     background: #0d0f14f2; border: 1px solid var(--line); border-radius: 8px;

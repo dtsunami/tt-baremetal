@@ -51,6 +51,8 @@ class DeviceManager:
         self._stream_src = None
         self._last_inject = None
         self._cum_bytes = 0
+        self._kernel_running = None  # gtest name while a kernel job is in flight
+        self._last_kernel = None     # last kernel job result (persisted for re-fetch)
 
     # ---- lifecycle ---------------------------------------------------------
     async def start(self):
@@ -203,6 +205,72 @@ class DeviceManager:
         if self.mode == "injecting":
             self.mode = "polling"
         return {"ok": True}
+
+    # ---- tt-metal kernels (subprocess owns the device; polling pauses) -----
+    async def kernels(self):
+        from .. import metal
+        return await self._run(lambda: {"available": metal.available(),
+                                        "tests": metal.list_tests()})
+
+    async def run_kernel(self, name, timeout=900):
+        """Start a kernel run as an async job (first-run JIT compiles can take many
+        minutes — far longer than any sane HTTP timeout). Returns immediately;
+        poll kernel_last() for the result."""
+        if self.mode == "busy":
+            return {"ok": False, "error": "a kernel is already running"}
+        self._stream = None                      # stop any injection stream
+        self.mode = "busy"
+        self._paused = True                      # nothing touches PCIe while tt-metal owns it
+        self._kernel_running = name
+        self._broadcast_mode()
+        asyncio.create_task(self._kernel_job(name, timeout))
+        return {"ok": True, "started": name}
+
+    async def _kernel_job(self, name, timeout):
+        t0 = time.monotonic()
+        try:
+            result = await self._run(self._run_kernel_blocking, name, timeout)
+            result["secs"] = round(time.monotonic() - t0, 1)
+            self._last_kernel = result
+        except Exception as e:
+            self.last_error = f"kernel run failed: {e}"
+            self._last_kernel = {"ok": False, "name": name, "error": self.last_error}
+        finally:
+            self._kernel_running = None
+            self._paused = False
+            if self.mode == "busy":
+                self.mode = "polling"
+            self._broadcast_mode()
+
+    def kernel_last(self):
+        return {"running": self._kernel_running, "result": self._last_kernel}
+
+    def _run_kernel_blocking(self, name, timeout):
+        from .. import metal
+        passed, out = metal.run_test(name, timeout=timeout)
+        # tt-metal reset the device on init: revalidate our context (reinit once if
+        # stale) and read the footprint — counters were zeroed, so absolutes = kernel.
+        try:
+            foot = metal.read_footprint_per_noc(self.ctx, self.fp)
+        except Exception:
+            self._init_device()
+            foot = metal.read_footprint_per_noc(self.ctx, self.fp)
+        agg = metal.aggregate_bw()
+        # re-baseline the poller (counters were zeroed; first delta would be garbage)
+        self.poller.prev, self.poller.bw, self.poller.last_t = {}, {}, None
+        self.poller.sample()
+        tail = "\n".join(out.splitlines()[-12:])
+        return {"ok": True, "passed": passed, "name": name,
+                "foot": {str(n): {_key(k): v[n] for k, v in foot.items() if v[n]} for n in (0, 1)},
+                "agg": agg and {k: v for k, v in agg.items() if k != "footprint"},
+                "log_tail": tail}
+
+    def _broadcast_mode(self):
+        f = dict(self._last_frame or {"ts": 0, "tiles": {}, "dram": {},
+                                      "inject": {"streaming": False, "src": None}})
+        f["mode"] = self.mode
+        f["reset_needed"] = self.reset_needed
+        self._broadcast(f)
 
     # ---- static model + status (no device read) ---------------------------
     def floorplan_model(self):
