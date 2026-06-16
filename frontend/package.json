@@ -14,6 +14,10 @@
     "vite": "^5.4.11"
   },
   "dependencies": {
+    "@codemirror/lang-cpp": "^6.0.3",
+    "@codemirror/lang-rust": "^6.0.2",
+    "@codemirror/legacy-modes": "^6.5.3",
+    "codemirror": "^6.0.2",
     "svelte-spa-router": "^4.0.1"
   }
 }

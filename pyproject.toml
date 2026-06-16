@@ -14,6 +14,7 @@ dependencies = [
     "tt-exalens>=0.3.21",
     "rich>=13",
     "textual>=1.0",
+    "pyluwen",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +28,7 @@ bhtop = "bhtop.cli:main"
 bhtop-inject = "bhtop.inject_app:main"
 bhtop-metal = "bhtop.metal:main"
 bhtop-web = "bhtop.web.server:main"
+bhtop-l2cpu = "bhtop.l2cpu.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/tenstorrent/tt-isa-documentation"

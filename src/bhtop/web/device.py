@@ -25,6 +25,11 @@ from .. import geometry as G
 from ..floorplan import build, KIND_RGB
 from ..poller import Poller, SAFE_KINDS
 from ..patterns import BUILDERS
+from ..l2cpu import (L2cpu, regmap, Hang as L2Hang, HARTS, SPIN_ADDR,
+                     HART_STATUS, TRIGGER, RESET_VEC, RNMI_TRAP, RNMI_EXC,
+                     TELE_ADDR, TELE_SLOTS, TELE_STRIDE)
+from . import l2lab
+from . import labkit
 
 CARD_PATH = os.path.expanduser("~/blackhole/uarch/" + G.CARD_IMAGE)
 
@@ -44,8 +49,8 @@ class DeviceManager:
         self.reset_needed = False
         self.last_error = None
         self._paused = False
-        self._clients = set()        # set[asyncio.Queue]
         self._last_frame = None
+        self.noc_chan = labkit.Broadcaster(seed=lambda: self._last_frame)  # /ws/telemetry
         self._cells = {}             # noc0 (x,y) -> Tile, for pattern building
         self._stream = None          # active streaming inject spec, or None
         self._stream_src = None
@@ -53,6 +58,20 @@ class DeviceManager:
         self._cum_bytes = 0
         self._kernel_running = None  # gtest name while a kernel job is in flight
         self._last_kernel = None     # last kernel job result (persisted for re-fetch)
+        self._build_running = None   # ninja target while a build job is in flight
+        self._last_build = None      # last build job result (persisted for re-fetch)
+        self._compute_running = None # compute example name while a tlab run is in flight
+        self._last_compute = None    # last tlab compute run result (per-engine zones)
+        self._tlab_deployed = {}     # Tensix core "x,y" -> {kernel, math_occ} last run there
+        # ---- L2CPU cockpit (shares this single device owner) ----
+        self._l2 = None              # lazy L2cpu controller bound to OUR ctx
+        self.l2_chan = labkit.Broadcaster()  # /ws/l2cpu (no seed — client steers tile/hz)
+        self._l2_active = 0          # tile the telemetry stream is focused on
+        self._l2_hz = 5.0            # L2 telemetry sample rate (independent of NoC poll)
+        self._l2_released = set()    # tiles known released (refreshed on probe/bringup)
+        self._l2_busy = None         # label while a bringup job is in flight
+        self._last_bringup = None    # last bringup result (persisted for re-fetch)
+        self._l2_deployed = {}       # (tile,hart) -> {name,lang,addr,seized,words} last deploy
 
     # ---- lifecycle ---------------------------------------------------------
     async def start(self):
@@ -60,6 +79,7 @@ class DeviceManager:
         await self._run(self._init_device)
         self.mode = "polling"
         asyncio.create_task(self._poll_loop())
+        asyncio.create_task(self._l2_tele_loop())
 
     async def _run(self, fn, *a):
         """Run a blocking device call on the single worker thread."""
@@ -131,21 +151,13 @@ class DeviceManager:
 
     def _broadcast(self, frame):
         self._last_frame = frame
-        for q in list(self._clients):
-            try:
-                q.put_nowait(frame)
-            except asyncio.QueueFull:
-                pass
+        self.noc_chan.broadcast(frame)
 
     async def subscribe(self):
-        q = asyncio.Queue(maxsize=4)
-        if self._last_frame:
-            q.put_nowait(self._last_frame)
-        self._clients.add(q)
-        return q
+        return await self.noc_chan.subscribe()
 
     def unsubscribe(self, q):
-        self._clients.discard(q)
+        self.noc_chan.unsubscribe(q)
 
     # ---- injection (host-driven traffic; runs on the same single owner) ----
     async def inject(self, src, pattern, length, fires, stream):
@@ -212,7 +224,7 @@ class DeviceManager:
         return await self._run(lambda: {"available": metal.available(),
                                         "tests": metal.list_tests()})
 
-    async def run_kernel(self, name, timeout=900):
+    async def run_kernel(self, name, timeout=900, dprint_cores=None):
         """Start a kernel run as an async job (first-run JIT compiles can take many
         minutes — far longer than any sane HTTP timeout). Returns immediately;
         poll kernel_last() for the result."""
@@ -223,13 +235,13 @@ class DeviceManager:
         self._paused = True                      # nothing touches PCIe while tt-metal owns it
         self._kernel_running = name
         self._broadcast_mode()
-        asyncio.create_task(self._kernel_job(name, timeout))
+        asyncio.create_task(self._kernel_job(name, timeout, dprint_cores))
         return {"ok": True, "started": name}
 
-    async def _kernel_job(self, name, timeout):
+    async def _kernel_job(self, name, timeout, dprint_cores=None):
         t0 = time.monotonic()
         try:
-            result = await self._run(self._run_kernel_blocking, name, timeout)
+            result = await self._run(self._run_kernel_blocking, name, timeout, dprint_cores)
             result["secs"] = round(time.monotonic() - t0, 1)
             self._last_kernel = result
         except Exception as e:
@@ -245,9 +257,9 @@ class DeviceManager:
     def kernel_last(self):
         return {"running": self._kernel_running, "result": self._last_kernel}
 
-    def _run_kernel_blocking(self, name, timeout):
+    def _run_kernel_blocking(self, name, timeout, dprint_cores=None):
         from .. import metal
-        passed, out = metal.run_test(name, timeout=timeout)
+        passed, out = metal.run_test(name, timeout=timeout, dprint_cores=dprint_cores)
         # tt-metal reset the device on init: revalidate our context (reinit once if
         # stale) and read the footprint — counters were zeroed, so absolutes = kernel.
         try:
@@ -260,10 +272,111 @@ class DeviceManager:
         self.poller.prev, self.poller.bw, self.poller.last_t = {}, {}, None
         self.poller.sample()
         tail = "\n".join(out.splitlines()[-12:])
+        dprint = metal.extract_dprint(out)
         return {"ok": True, "passed": passed, "name": name,
                 "foot": {str(n): {_key(k): v[n] for k, v in foot.items() if v[n]} for n in (0, 1)},
                 "agg": agg and {k: v for k, v in agg.items() if k != "footprint"},
-                "log_tail": tail}
+                "dprint": dprint[-400:], "log_tail": tail}
+
+    # ---- tlab: Tensix Compute Lab (run a compute example, read per-engine zones) -----
+    # Reuses run_kernel's busy-mode + the tt-metal device-reset recovery. tt-metal owns +
+    # RESETS the device for the run (so the L2CPU/x280 harts go back to reset).
+    async def tlab_examples(self):
+        from .. import metal
+        return await self._run(lambda: {"available": metal.available(),
+                                        "examples": metal.compute_examples()})
+
+    async def tlab_run(self, name, timeout=900):
+        if self.mode == "busy":
+            return {"ok": False, "error": "a kernel is already running"}
+        self._stream = None
+        self.mode = "busy"
+        self._paused = True
+        self._compute_running = name
+        self._broadcast_mode()
+        asyncio.create_task(self._tlab_job(name, timeout))
+        return {"ok": True, "started": name}
+
+    async def _tlab_job(self, name, timeout):
+        t0 = time.monotonic()
+        try:
+            result = await self._run(self._tlab_run_blocking, name, timeout)
+            result["secs"] = round(time.monotonic() - t0, 1)
+            self._last_compute = result
+        except Exception as e:
+            self.last_error = f"compute run failed: {e}"
+            self._last_compute = {"ok": False, "name": name, "error": self.last_error}
+        finally:
+            self._compute_running = None
+            self._paused = False
+            if self.mode == "busy":
+                self.mode = "polling"
+            self._broadcast_mode()
+
+    def _tlab_run_blocking(self, name, timeout):
+        from .. import metal
+        passed, out = metal.run_example(name, timeout=timeout)
+        compute = metal.aggregate_compute()          # per-Tensix-core per-engine cycles
+        if compute:                                  # remember which kernel ran on which Tensix core
+            short = name.replace("metal_example_", "")
+            for core, c in compute["cores"].items():
+                self._tlab_deployed[core] = {"kernel": short, "math_occ": c["math_occ"]}
+        # tt-metal reset the device on init: revalidate ctx (reinit if stale) + rebaseline poller
+        try:
+            metal.read_footprint_per_noc(self.ctx, self.fp)
+        except Exception:
+            self._init_device()
+        self.poller.prev, self.poller.bw, self.poller.last_t = {}, {}, None
+        self.poller.sample()
+        return {"ok": True, "passed": passed, "name": name, "compute": compute,
+                "dprint": metal.extract_dprint(out)[-40:],
+                "log_tail": "\n".join(out.splitlines()[-12:])}
+
+    def tlab_last(self):
+        return {"running": self._compute_running, "result": self._last_compute}
+
+    def tlab_status(self):
+        """Which compute kernel last ran on which Tensix core (+ MATH occupancy)."""
+        return {"deployed": self._tlab_deployed, "running": self._compute_running}
+
+    async def tlab_files(self, example):
+        from . import tlab
+        return await asyncio.to_thread(tlab.files, example)
+
+    async def tlab_read(self, path):
+        from . import tlab
+        return await asyncio.to_thread(tlab.read_file, path)
+
+    async def tlab_write(self, path, content):
+        from . import tlab
+        return await asyncio.to_thread(tlab.write_file, path, content)
+
+    async def tlab_revert(self, path):
+        from . import tlab
+        return await asyncio.to_thread(tlab.revert_file, path)
+
+    async def tlab_copy(self, src, name):
+        from . import tlab
+        return await asyncio.to_thread(tlab.copy_file, src, name)
+
+    async def tlab_disasm(self):
+        from . import tlab_disasm
+        return await asyncio.to_thread(tlab_disasm.fetch_last)
+
+    async def running(self):
+        """Which tt-metal kernels are live, keyed by JIT build hash (web/inspector.py): the
+        device tree badges a source 'running' (basename in by_source) / 'stale' (content no
+        longer matches the running build). Host-side read of the Inspector dump."""
+        from . import inspector
+        return await asyncio.to_thread(inspector.read)
+
+    async def tlab_docs_index(self):
+        from . import tlab_docs
+        return await asyncio.to_thread(tlab_docs.docs_index)
+
+    async def tlab_doc(self, doc_id):
+        from . import tlab_docs
+        return await asyncio.to_thread(tlab_docs.doc, doc_id)
 
     def _broadcast_mode(self):
         f = dict(self._last_frame or {"ts": 0, "tiles": {}, "dram": {},
@@ -271,6 +384,321 @@ class DeviceManager:
         f["mode"] = self.mode
         f["reset_needed"] = self.reset_needed
         self._broadcast(f)
+
+    # ---- kernel lab: edit / build / docs (no device access) ---------------
+    # File + doc ops are pure filesystem; builds are CPU subprocesses. None of
+    # these touch PCIe, so they run on the default thread pool (NOT the single
+    # device executor) and live polling keeps running straight through a build.
+    async def lab_projects(self):
+        from . import lab
+        return await asyncio.to_thread(lab.projects)
+
+    async def lab_files(self, project):
+        from . import lab
+        return await asyncio.to_thread(lab.files, project)
+
+    async def lab_read(self, path):
+        from . import lab
+        return await asyncio.to_thread(lab.read_file, path)
+
+    async def lab_write(self, path, content):
+        from . import lab
+        return await asyncio.to_thread(lab.write_file, path, content)
+
+    async def lab_revert(self, path):
+        from . import lab
+        return await asyncio.to_thread(lab.revert_file, path)
+
+    async def lab_copy(self, src, name):
+        from . import lab
+        return await asyncio.to_thread(lab.copy_file, src, name)
+
+    async def lab_docs_index(self):
+        from . import lab
+        return await asyncio.to_thread(lab.docs_index)
+
+    async def lab_doc(self, doc_id):
+        from . import lab
+        return await asyncio.to_thread(lab.doc, doc_id)
+
+    async def lab_build(self, target="unit_tests_data_movement"):
+        if self._build_running:
+            return {"ok": False, "error": "a build is already running"}
+        self._build_running = target
+        asyncio.create_task(self._build_job(target))
+        return {"ok": True, "started": target}
+
+    async def _build_job(self, target):
+        from . import lab
+        t0 = time.monotonic()
+        try:
+            res = await asyncio.to_thread(lab.build, target)
+            res["secs"] = round(time.monotonic() - t0, 1)
+            self._last_build = res
+        except Exception as e:                       # pragma: no cover
+            self._last_build = {"ok": False, "target": target, "error": str(e)}
+        finally:
+            self._build_running = None
+
+    def build_last(self):
+        return {"running": self._build_running, "result": self._last_build}
+
+    # ---- L2CPU cockpit: develop / deploy / observe ------------------------
+    # Device ops run on the SAME single worker thread (via _run) as the NoC poll,
+    # so they serialize automatically — the chip never sees concurrent access.
+    # Compile is pure CPU and stays in l2lab on the default pool.
+    def _l2_get(self):
+        if self._l2 is None:
+            self._l2 = L2cpu(ctx=self.ctx)        # reuse our ctx — no 2nd device owner
+        return self._l2
+
+    async def l2_tiles(self):
+        return await self._run(self._l2_tiles)
+
+    def _l2_tiles(self):
+        l2 = self._l2_get()
+        tiles = []
+        for i in regmap.TILES:
+            rs = l2.reset_state(i)
+            tiles.append({"tile": i, "coord": list(regmap.TILES[i][0]),
+                          "bit": regmap.TILES[i][1], "released": rs["released"],
+                          "wedged": rs["wedged"]})
+        self._l2_released = {t["tile"] for t in tiles if t["released"]}
+        deployed = {f"{t},{h}": v for (t, h), v in self._l2_deployed.items()}
+        return {"tiles": tiles, "harts": regmap.HARTS, "busy": self._l2_busy,
+                "have_rust": l2lab.have_rust(), "deployed": deployed}
+
+    async def l2_regs(self, tile):
+        return await self._run(self._l2_regs, tile)
+
+    def _l2_regs(self, tile):
+        l2 = self._l2_get()
+        rs = l2.reset_state(tile)
+        out = {"tile": tile, "coord": list(regmap.TILES[tile][0]),
+               "released": rs["released"], "wedged": rs["wedged"], "l2cpu_reset": rs["raw"]}
+        if rs["released"]:
+            out["hart_status"] = l2.rd(tile, HART_STATUS) & 0xFFFF
+            out["trigger"] = l2.rd(tile, TRIGGER)
+            harts = []
+            for h in range(regmap.HARTS):
+                rv = l2.rdn(tile, RESET_VEC + h * 8, 2)
+                trap = l2.rdn(tile, RNMI_TRAP + h * 16, 2)
+                exc = l2.rdn(tile, RNMI_EXC + h * 16, 2)
+                j = lambda w: (w[1] << 32) | w[0]
+                harts.append({"hart": h, "reset_vec": j(rv),
+                              "rnmi_trap": j(trap), "rnmi_exc": j(exc)})
+            out["harts"] = harts
+        return out
+
+    async def l2_arch(self, tile, hart):
+        return await self._run(lambda: self._l2_get().arch_state(tile, hart))
+
+    async def l2_bringup(self, tile):
+        if self.reset_needed:
+            return {"ok": False, "error": "NoC hang pending — run tt-smi -r 0 and restart"}
+        if self.mode == "busy":
+            return {"ok": False, "error": "a tt-metal kernel owns the device"}
+        if self._l2_busy:
+            return {"ok": False, "error": f"{self._l2_busy} already in progress"}
+        self._l2_busy = f"bringup tile {tile}"
+        asyncio.create_task(self._l2_bringup_job(tile))
+        return {"ok": True, "started": tile}
+
+    async def _l2_bringup_job(self, tile):
+        try:
+            res = await self._run(lambda: self._l2_get().bringup(tile))
+            self._last_bringup = {"ok": True, "tile": tile, **res}
+        except Exception as e:
+            self._last_bringup = {"ok": False, "tile": tile, "error": str(e)}
+        finally:
+            self._l2_busy = None
+            try:
+                await self._run(self._l2_tiles)        # refresh released set
+            except Exception:
+                pass
+
+    def l2_bringup_last(self):
+        return {"running": self._l2_busy, "result": self._last_bringup}
+
+    async def l2_deploy(self, tile, hart, content, lang, addr, name=""):
+        """Compile (off the device thread) then load+redirect (on it). One call =
+        the whole develop→deploy step. Returns the verified seize result and records
+        which kernel now runs on this hart (so the cockpit can show it)."""
+        if self.reset_needed:
+            return {"ok": False, "error": "NoC hang pending — run tt-smi -r 0 and restart"}
+        if self.mode == "busy":
+            return {"ok": False, "error": "a tt-metal kernel owns the device"}
+        if self._l2_busy:
+            return {"ok": False, "error": f"{self._l2_busy} in progress"}
+        comp = await asyncio.to_thread(l2lab.compile_kernel, content, lang, addr)
+        if not comp.get("ok"):
+            return {"ok": False, "stage": "compile", **comp}
+
+        def _deploy():
+            l2 = self._l2_get()
+            l2.wr(tile, TELE_ADDR + hart * TELE_STRIDE, [0] * TELE_SLOTS)  # fresh window
+            return l2.load(tile, hart, list(comp["words"]), addr=addr, redirect=True)
+        try:
+            res = await self._run(_deploy)
+        except Exception as e:
+            return {"ok": False, "stage": "load", "error": str(e)}
+        self._l2_active = tile                          # focus the stream on it
+        self._l2_deployed[(tile, hart)] = {
+            "name": name or f"{lang} kernel", "lang": lang, "addr": addr,
+            "seized": bool(res.get("seized")), "words": len(comp["words"])}
+        return {"ok": True, "stage": "load", "tile": tile, "hart": hart, "addr": addr,
+                "words": len(comp["words"]), "bytes": comp["bytes"],
+                "seized": res.get("seized"), "disasm": comp.get("disasm", "")}
+
+    def _deployed_for(self, tile):
+        """{hart: {name,lang,seized}} for the harts we've deployed to on this tile."""
+        return {h: v for (t, h), v in self._l2_deployed.items() if t == tile}
+
+    async def l2_deploy_all(self, tile, content, lang, addr, name=""):
+        """Compile once, load the SAME kernel onto all 4 harts of a tile (each gets its
+        own telemetry window). Great for running a probe on every hart at once."""
+        if self.reset_needed or self.mode == "busy" or self._l2_busy:
+            return {"ok": False, "error": "device not ready (reset/busy/bringup)"}
+        comp = await asyncio.to_thread(l2lab.compile_kernel, content, lang, addr)
+        if not comp.get("ok"):
+            return {"ok": False, "stage": "compile", **comp}
+
+        def _all():
+            l2 = self._l2_get()
+            out = []
+            for h in range(HARTS):
+                l2.wr(tile, TELE_ADDR + h * TELE_STRIDE, [0] * TELE_SLOTS)   # fresh window
+                try:
+                    r = l2.load(tile, h, list(comp["words"]), addr=addr, redirect=True)
+                    out.append({"hart": h, "seized": r.get("seized")})
+                except Exception as e:
+                    out.append({"hart": h, "error": str(e)})
+            return out
+        res = await self._run(_all)
+        for o in res:
+            if "error" not in o:
+                self._l2_deployed[(tile, o["hart"])] = {
+                    "name": name or f"{lang} kernel", "lang": lang, "addr": addr,
+                    "seized": bool(o.get("seized")), "words": len(comp["words"])}
+        self._l2_active = tile
+        return {"ok": True, "deployed_all": res, "words": len(comp["words"]),
+                "bytes": comp["bytes"], "disasm": comp.get("disasm", "")}
+
+    async def l2_park_all(self, tile):
+        """Park all 4 harts of a tile: redirect each to the bringup spin (no code needed —
+        SPIN_ADDR already holds `j .`). Stops whatever they were running."""
+        if self.reset_needed or self.mode == "busy" or self._l2_busy:
+            return {"ok": False, "error": "device not ready (reset/busy/bringup)"}
+
+        def _park():
+            l2 = self._l2_get()
+            out = []
+            for h in range(HARTS):
+                try:
+                    r = l2.redirect(tile, h, SPIN_ADDR)
+                    out.append({"hart": h, "seized": r.get("seized")})
+                except Exception as e:
+                    out.append({"hart": h, "error": str(e)})
+            return out
+        res = await self._run(_park)
+        for h in range(HARTS):
+            self._l2_deployed.pop((tile, h), None)        # no longer running user code
+        return {"ok": True, "parked": res}
+
+    async def l2_zero_tele(self, tile, hart=None):
+        """Zero one hart's telemetry window (or all 4 if hart is None)."""
+        def _z():
+            l2 = self._l2_get()
+            if hart is None:
+                l2.wr(tile, TELE_ADDR, [0] * (TELE_SLOTS * HARTS))
+            else:
+                l2.wr(tile, TELE_ADDR + hart * TELE_STRIDE, [0] * TELE_SLOTS)
+            return {"ok": True}
+        return await self._run(_z)
+
+    async def l2_poke(self, tile, addr, val):
+        return await self._run(lambda: (self._l2_get().poke(tile, addr, val), {"ok": True})[1])
+
+    # ---- L2 workspace + docs + compile (filesystem/CPU — off the device thread) ----
+    async def l2_files(self):
+        return await asyncio.to_thread(l2lab.files)
+
+    async def l2_examples(self):
+        return await asyncio.to_thread(lambda: {"examples": l2lab.examples(),
+                                                "have_rust": l2lab.have_rust()})
+
+    async def l2_read(self, name):
+        return await asyncio.to_thread(l2lab.read_file, name)
+
+    async def l2_write(self, name, content):
+        return await asyncio.to_thread(l2lab.write_file, name, content)
+
+    async def l2_new(self, name, lang):
+        return await asyncio.to_thread(l2lab.new_file, name, lang)
+
+    async def l2_rename(self, src, name):
+        from . import l2lab
+        return await asyncio.to_thread(l2lab.rename_file, src, name)
+
+    async def l2_copy(self, src, name):
+        return await asyncio.to_thread(l2lab.copy_file, src, name)
+
+    async def l2_delete(self, name):
+        return await asyncio.to_thread(l2lab.delete_file, name)
+
+    async def l2_compile(self, content, lang, addr):
+        return await asyncio.to_thread(l2lab.compile_kernel, content, lang, addr)
+
+    async def l2_docs_index(self):
+        return await asyncio.to_thread(l2lab.docs_index)
+
+    async def l2_doc(self, doc_id):
+        return await asyncio.to_thread(l2lab.doc, doc_id)
+
+    # ---- L2 telemetry stream (its own rate, decoupled from the NoC poll) ----
+    async def l2_subscribe(self):
+        return await self.l2_chan.subscribe()
+
+    def l2_unsubscribe(self, q):
+        self.l2_chan.unsubscribe(q)
+
+    def l2_select(self, tile, hz=None):
+        if tile is not None and tile in regmap.TILES:
+            self._l2_active = tile
+        if hz:
+            self._l2_hz = max(1.0, min(10.0, float(hz)))
+
+    async def _l2_tele_loop(self):
+        while True:
+            await asyncio.sleep(1.0 / max(self._l2_hz, 1.0))
+            if len(self.l2_chan) == 0:
+                continue
+            tile = self._l2_active
+            if self.reset_needed or self._paused or self.mode not in ("polling", "injecting"):
+                self._l2_broadcast({"tile": tile, "paused": True, "mode": self.mode,
+                                    "reset_needed": self.reset_needed})
+                continue
+            try:
+                frame = await self._run(self._l2_tele_frame, tile)
+            except Exception as e:                        # pragma: no cover
+                frame = {"tile": tile, "error": str(e)}
+            self._l2_broadcast(frame)
+
+    def _l2_tele_frame(self, tile):
+        l2 = self._l2_get()
+        rs = l2.reset_state(tile)
+        out = {"tile": tile, "released": rs["released"], "wedged": rs["wedged"],
+               "mode": self.mode, "ts": round(time.monotonic(), 3), "hz": self._l2_hz,
+               "busy": self._l2_busy, "deployed": self._deployed_for(tile)}
+        if rs["released"]:
+            # every hart's window in one read -> the UI can show any hart, no collision
+            out["tele_by_hart"] = {str(h): v for h, v in l2.telemetry_all(tile).items()}
+            out["hart_status"] = l2.rd(tile, HART_STATUS) & 0xFFFF
+            out["trigger"] = l2.rd(tile, TRIGGER)
+        return out
+
+    def _l2_broadcast(self, frame):
+        self.l2_chan.broadcast(frame)
 
     # ---- static model + status (no device read) ---------------------------
     def floorplan_model(self):
@@ -311,7 +739,7 @@ class DeviceManager:
     def status(self):
         return {"mode": self.mode, "reset_needed": self.reset_needed,
                 "last_error": self.last_error, "hz": self.hz,
-                "clients": len(self._clients),
+                "clients": len(self.noc_chan),
                 "streaming": bool(self._stream), "cum_bytes": self._cum_bytes,
                 "last_inject": self._last_inject}
 

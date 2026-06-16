@@ -1,0 +1,138 @@
+"""
+bhtop.l2cpu.toolchain — compile asm / C / Rust to a flat binary for the x280.
+
+Produces a position-fixed flat image (list of u32 words) linked at `base`, ready to
+drop into DRAM and jump to. Uses the RISC-V toolchain that ships with tt-metal
+(riscv-tt-elf-* under runtime/sfpi); Rust uses a rustup `riscv64gc-unknown-none-elf`
+toolchain if installed.
+
+Layout: the bundled rt/link.ld places `.text._start` first at `base` (overridable via
+--defsym=LOAD_ADDR), packs rodata/data, and reserves stack/bss. For C we also link
+rt/crt0.s so the user only writes `int main(void)` (crt0 sets sp, zeroes bss, calls
+main, then parks). asm/Rust provide their own `_start`.
+"""
+import os
+import struct
+import subprocess
+import tempfile
+
+SFPI = os.path.expanduser("~/tt-metal/runtime/sfpi/compiler/bin")
+HERE = os.path.dirname(__file__)
+RT = os.path.join(HERE, "rt")
+INCLUDE = os.path.join(HERE, "include")
+LINK_LD = os.path.join(RT, "link.ld")
+CRT0 = os.path.join(RT, "crt0.s")
+DEFAULT_BASE = 0x30001000
+
+RUST_TARGET = "riscv64gc-unknown-none-elf"
+EXTS = {".s": "asm", ".S": "asm", ".c": "c", ".rs": "rust"}
+
+
+class ToolError(RuntimeError):
+    pass
+
+
+def tool(name):
+    return os.path.join(SFPI, f"riscv-tt-elf-{name}")
+
+
+def have_gcc():
+    return os.path.exists(tool("gcc"))
+
+
+def have_rust():
+    # apt `rustc` lists every target but lacks bare-metal core; need rustup + the
+    # installed target. (rustup also shadows apt rustc so `rustc` picks up core.)
+    if not _which("rustup"):
+        return False
+    return RUST_TARGET in _run(["rustup", "target", "list", "--installed"], check=False)[1]
+
+
+def _which(p):
+    from shutil import which
+    return which(p)
+
+
+def _run(cmd, check=True, env=None):
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    if check and r.returncode != 0:
+        raise ToolError(f"$ {' '.join(cmd)}\n{(r.stderr or r.stdout).strip()}")
+    return r.returncode, (r.stdout + r.stderr)
+
+
+def _rust_env():
+    """rustc env with BH_RT pointing at rt/ so kernels can
+    `include!(concat!(env!(\"BH_RT\"), \"/bh.rs\"))` to pull in the harness."""
+    return {**os.environ, "BH_RT": RT}
+
+
+def detect_lang(path):
+    return EXTS.get(os.path.splitext(path)[1], None)
+
+
+def _to_words(binpath):
+    b = open(binpath, "rb").read()
+    if len(b) % 4:
+        b += b"\x00" * (4 - len(b) % 4)
+    return list(struct.unpack("<%dI" % (len(b) // 4), b)) if b else []
+
+
+def _objcopy(elf, out):
+    _run([tool("objcopy"), "-O", "binary", elf, out])
+
+
+def _gcc_cmd(elf, base, lang, path):
+    cmd = [tool("gcc"), "-march=rv64gc", "-mabi=lp64d", "-nostdlib", "-nostartfiles",
+           "-fno-pic", f"-T{LINK_LD}", f"-Wl,--defsym=LOAD_ADDR={base:#x}",
+           "-Wl,--no-relax", "-o", elf]
+    if lang == "c":
+        cmd += ["-ffreestanding", "-O2", "-fno-builtin", "-fno-stack-protector",
+                "-fno-tree-loop-distribute-patterns", "-ffunction-sections",
+                f"-I{INCLUDE}", path, CRT0]                  # crt0 provides _start->main
+    else:
+        cmd += [f"-Wa,-I{INCLUDE}", path]                    # asm: -I lets `.include "bh.inc"` resolve
+    return cmd
+
+
+def _rustc_cmd(elf, base, path):
+    return ["rustc", "--edition", "2021", "--target", RUST_TARGET, "-C", "panic=abort",
+            "-C", "opt-level=2", "-C", "relocation-model=static",
+            "-C", f"link-arg=-T{LINK_LD}", "-C", f"link-arg=--defsym=LOAD_ADDR={base:#x}",
+            "-C", "link-arg=--no-relax", "-o", elf, path]
+
+
+def _build_elf(path, elf, base, lang):
+    """Compile any supported language to a position-fixed ELF at `elf`."""
+    if lang not in ("asm", "c", "rust"):
+        raise ToolError(f"unknown language for {path} (use .s/.c/.rs or pass lang=)")
+    if lang in ("asm", "c"):
+        if not have_gcc():
+            raise ToolError(f"sfpi gcc not found at {SFPI} — is tt-metal present?")
+        _run(_gcc_cmd(elf, base, lang, path))
+    else:
+        if not have_rust():
+            raise ToolError(
+                "Rust bare-metal toolchain not ready. Install:\n"
+                "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y\n"
+                "  . \"$HOME/.cargo/env\" && rustup target add " + RUST_TARGET)
+        _run(_rustc_cmd(elf, base, path), env=_rust_env())
+
+
+def compile_source(path, base=DEFAULT_BASE, lang=None):
+    """Compile `path` to a flat image linked at `base`. Returns list[u32 words]."""
+    lang = lang or detect_lang(path)
+    with tempfile.TemporaryDirectory() as d:
+        elf = os.path.join(d, "a.elf")
+        binf = os.path.join(d, "a.bin")
+        _build_elf(path, elf, base, lang)
+        _objcopy(elf, binf)
+        return _to_words(binf)
+
+
+def disasm(path, base=DEFAULT_BASE, lang=None):
+    """Compile and return objdump disassembly (works for asm/C/Rust alike)."""
+    lang = lang or detect_lang(path)
+    with tempfile.TemporaryDirectory() as d:
+        elf = os.path.join(d, "a.elf")
+        _build_elf(path, elf, base, lang)
+        return _run([tool("objdump"), "-d", elf], check=False)[1]

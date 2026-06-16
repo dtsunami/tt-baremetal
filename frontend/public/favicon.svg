@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="bhtop">
+  <!-- die / package -->
+  <rect width="32" height="32" rx="7" fill="#0a0c10"/>
+  <rect x="0.5" y="0.5" width="31" height="31" rx="6.5" fill="none" stroke="#2a2f3a" stroke-width="1"/>
+
+  <!-- bandwidth glow under the hot tile -->
+  <rect x="8" y="8" width="9.5" height="9.5" rx="3.5" fill="#ffd24a" opacity="0.20"/>
+
+  <!-- idle tiles -->
+  <g fill="#20252e">
+    <rect x="4"    y="4"    width="4.5" height="4.5" rx="1.3"/>
+    <rect x="17"   y="4"    width="4.5" height="4.5" rx="1.3"/>
+    <rect x="23.5" y="10.5" width="4.5" height="4.5" rx="1.3"/>
+    <rect x="4"    y="17"   width="4.5" height="4.5" rx="1.3"/>
+    <rect x="10.5" y="17"   width="4.5" height="4.5" rx="1.3"/>
+    <rect x="23.5" y="17"   width="4.5" height="4.5" rx="1.3"/>
+    <rect x="10.5" y="23.5" width="4.5" height="4.5" rx="1.3"/>
+    <rect x="17"   y="23.5" width="4.5" height="4.5" rx="1.3"/>
+    <rect x="23.5" y="23.5" width="4.5" height="4.5" rx="1.3"/>
+  </g>
+
+  <!-- NoC1 (cyan) active tiles -->
+  <g fill="#36ecff">
+    <rect x="10.5" y="4"    width="4.5" height="4.5" rx="1.3"/>
+    <rect x="17"   y="10.5" width="4.5" height="4.5" rx="1.3"/>
+    <rect x="4"    y="23.5" width="4.5" height="4.5" rx="1.3"/>
+  </g>
+
+  <!-- NoC0 (purple) active tiles -->
+  <g fill="#cf83ff">
+    <rect x="23.5" y="4"    width="4.5" height="4.5" rx="1.3"/>
+    <rect x="4"    y="10.5" width="4.5" height="4.5" rx="1.3"/>
+    <rect x="17"   y="17"   width="4.5" height="4.5" rx="1.3"/>
+  </g>
+
+  <!-- hot tile (peak bandwidth) -->
+  <rect x="10.5" y="10.5" width="4.5" height="4.5" rx="1.3" fill="#ffd24a"/>
+</svg>

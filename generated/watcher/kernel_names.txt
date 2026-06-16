@@ -3,4 +3,4 @@
 2: tt_metal/impl/dispatch/kernels/cq_dispatch.cpp
 3: tt_metal/impl/dispatch/kernels/cq_dispatch_subordinate.cpp
 4: tt_metal/impl/dispatch/kernels/cq_dispatch_subordinate_compute.cpp
-5: tests/tt_metal/tt_metal/data_movement/one_to_one/kernels/sender_2_0.cpp
+5: tests/tt_metal/tt_metal/data_movement/all_from_all/kernels/requestor_2_0.cpp

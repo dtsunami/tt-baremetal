@@ -1,0 +1,576 @@
+
+
+
+(.venv) starboy@ttstar:~/bhtop$ python scripts/probe_l2cpu_rnmi.py 
+L2CPU RNMI probe — READ-ONLY
+  NoC=0  device=0  safe_mode=False (intentional)
+  L2CPU is in the NoC0-hang hazard zone. If anything wedges: run  tt-smi -r 0  on ttstar.
+
+L2CPU tiles to probe: [(8, 3), (8, 5), (8, 7), (8, 9)]
+
+canary: reading 1 word @0x20010000 on (8,3) via NoC0 ...
+canary ok: D0000000  (0.0 ms)
+
+==========================================================================
+  L2CPU tile noc0=(8,3)   loc=l0,0   via NoC0
+==========================================================================
+
+[reset handlers]  0x20010000  (0.0 ms)
+  raw: D0000000 00000000 D0000000 00000000 D0000000 00000000 D0000000 00000000
+  hart0: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart1: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart2: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart3: 0x00000000D0000000  [GDDR6 (uncached)]
+
+[RNMI handlers]   0x20010418  (0.0 ms)
+  raw: 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+  hart0: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart1: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart2: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart3: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+
+[RNMI trigger]    0x20010414  (0.0 ms)
+  raw: 00000000   pending harts: none
+
+[scratch 64B]     0x20010100  (0.0 ms)   empty
+  +0x00: 00000000 00000000 00000000 00000000
+  +0x10: 00000000 00000000 00000000 00000000
+  +0x20: 00000000 00000000 00000000 00000000
+  +0x30: 00000000 00000000 00000000 00000000
+
+==========================================================================
+  L2CPU tile noc0=(8,5)   loc=l0,1   via NoC0
+==========================================================================
+
+[reset handlers]  0x20010000  (0.0 ms)
+  raw: D0000000 00000000 D0000000 00000000 D0000000 00000000 D0000000 00000000
+  hart0: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart1: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart2: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart3: 0x00000000D0000000  [GDDR6 (uncached)]
+
+[RNMI handlers]   0x20010418  (0.0 ms)
+  raw: 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+  hart0: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart1: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart2: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart3: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+
+[RNMI trigger]    0x20010414  (0.0 ms)
+  raw: 00000000   pending harts: none
+
+[scratch 64B]     0x20010100  (0.0 ms)   empty
+  +0x00: 00000000 00000000 00000000 00000000
+  +0x10: 00000000 00000000 00000000 00000000
+  +0x20: 00000000 00000000 00000000 00000000
+  +0x30: 00000000 00000000 00000000 00000000
+
+==========================================================================
+  L2CPU tile noc0=(8,7)   loc=l0,2   via NoC0
+==========================================================================
+
+[reset handlers]  0x20010000  (0.0 ms)
+  raw: D0000000 00000000 D0000000 00000000 D0000000 00000000 D0000000 00000000
+  hart0: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart1: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart2: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart3: 0x00000000D0000000  [GDDR6 (uncached)]
+
+[RNMI handlers]   0x20010418  (0.0 ms)
+  raw: 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+  hart0: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart1: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart2: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart3: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+
+[RNMI trigger]    0x20010414  (0.0 ms)
+  raw: 00000000   pending harts: none
+
+[scratch 64B]     0x20010100  (0.0 ms)   empty
+  +0x00: 00000000 00000000 00000000 00000000
+  +0x10: 00000000 00000000 00000000 00000000
+  +0x20: 00000000 00000000 00000000 00000000
+  +0x30: 00000000 00000000 00000000 00000000
+
+==========================================================================
+  L2CPU tile noc0=(8,9)   loc=l0,3   via NoC0
+==========================================================================
+
+[reset handlers]  0x20010000  (0.0 ms)
+  raw: D0000000 00000000 D0000000 00000000 D0000000 00000000 D0000000 00000000
+  hart0: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart1: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart2: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart3: 0x00000000D0000000  [GDDR6 (uncached)]
+
+[RNMI handlers]   0x20010418  (0.0 ms)
+  raw: 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+  hart0: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart1: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart2: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart3: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+
+[RNMI trigger]    0x20010414  (0.0 ms)
+  raw: 00000000   pending harts: none
+
+[scratch 64B]     0x20010100  (0.0 ms)   empty
+  +0x00: 00000000 00000000 00000000 00000000
+  +0x10: 00000000 00000000 00000000 00000000
+  +0x20: 00000000 00000000 00000000 00000000
+  +0x30: 00000000 00000000 00000000 00000000
+
+==========================================================================
+  VERDICT
+==========================================================================
+  access path  : reads via NoC0 SUCCEEDED on 4 tile(s) — passthrough peripheral window is reachable, no hang observed.
+  RNMI handlers: all unset (no seize handler installed yet)
+  reset addrs  : set on >=1 hart
+  pending RNMIs: [0, 0, 0, 0]
+  WRITABILITY  : not tested (re-run with --writeback-test to answer the make-or-break unknown)
+
+(.venv) starboy@ttstar:~/bhtop$ python scripts/probe_l2cpu_rnmi.py --writeback-test
+L2CPU RNMI probe — READ-ONLY  +WRITEBACK TEST
+  NoC=0  device=0  safe_mode=False (intentional)
+  L2CPU is in the NoC0-hang hazard zone. If anything wedges: run  tt-smi -r 0  on ttstar.
+
+L2CPU tiles to probe: [(8, 3), (8, 5), (8, 7), (8, 9)]
+
+canary: reading 1 word @0x20010000 on (8,3) via NoC0 ...
+canary ok: D0000000  (0.1 ms)
+
+==========================================================================
+  L2CPU tile noc0=(8,3)   loc=l0,0   via NoC0
+==========================================================================
+
+[reset handlers]  0x20010000  (0.0 ms)
+  raw: D0000000 00000000 D0000000 00000000 D0000000 00000000 D0000000 00000000
+  hart0: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart1: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart2: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart3: 0x00000000D0000000  [GDDR6 (uncached)]
+
+[RNMI handlers]   0x20010418  (0.0 ms)
+  raw: 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+  hart0: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart1: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart2: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart3: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+
+[RNMI trigger]    0x20010414  (0.0 ms)
+  raw: 00000000   pending harts: none
+
+[scratch 64B]     0x20010100  (0.0 ms)   empty
+  +0x00: 00000000 00000000 00000000 00000000
+  +0x10: 00000000 00000000 00000000 00000000
+  +0x20: 00000000 00000000 00000000 00000000
+  +0x30: 00000000 00000000 00000000 00000000
+
+==========================================================================
+  L2CPU tile noc0=(8,5)   loc=l0,1   via NoC0
+==========================================================================
+
+[reset handlers]  0x20010000  (0.0 ms)
+  raw: D0000000 00000000 D0000000 00000000 D0000000 00000000 D0000000 00000000
+  hart0: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart1: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart2: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart3: 0x00000000D0000000  [GDDR6 (uncached)]
+
+[RNMI handlers]   0x20010418  (0.0 ms)
+  raw: 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+  hart0: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart1: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart2: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart3: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+
+[RNMI trigger]    0x20010414  (0.0 ms)
+  raw: 00000000   pending harts: none
+
+[scratch 64B]     0x20010100  (0.0 ms)   empty
+  +0x00: 00000000 00000000 00000000 00000000
+  +0x10: 00000000 00000000 00000000 00000000
+  +0x20: 00000000 00000000 00000000 00000000
+  +0x30: 00000000 00000000 00000000 00000000
+
+==========================================================================
+  L2CPU tile noc0=(8,7)   loc=l0,2   via NoC0
+==========================================================================
+
+[reset handlers]  0x20010000  (0.0 ms)
+  raw: D0000000 00000000 D0000000 00000000 D0000000 00000000 D0000000 00000000
+  hart0: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart1: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart2: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart3: 0x00000000D0000000  [GDDR6 (uncached)]
+
+[RNMI handlers]   0x20010418  (0.0 ms)
+  raw: 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+  hart0: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart1: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart2: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart3: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+
+[RNMI trigger]    0x20010414  (0.0 ms)
+  raw: 00000000   pending harts: none
+
+[scratch 64B]     0x20010100  (0.0 ms)   empty
+  +0x00: 00000000 00000000 00000000 00000000
+  +0x10: 00000000 00000000 00000000 00000000
+  +0x20: 00000000 00000000 00000000 00000000
+  +0x30: 00000000 00000000 00000000 00000000
+
+==========================================================================
+  L2CPU tile noc0=(8,9)   loc=l0,3   via NoC0
+==========================================================================
+
+[reset handlers]  0x20010000  (0.0 ms)
+  raw: D0000000 00000000 D0000000 00000000 D0000000 00000000 D0000000 00000000
+  hart0: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart1: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart2: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart3: 0x00000000D0000000  [GDDR6 (uncached)]
+
+[RNMI handlers]   0x20010418  (0.0 ms)
+  raw: 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+  hart0: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart1: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart2: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart3: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+
+[RNMI trigger]    0x20010414  (0.0 ms)
+  raw: 00000000   pending harts: none
+
+[scratch 64B]     0x20010100  (0.0 ms)   empty
+  +0x00: 00000000 00000000 00000000 00000000
+  +0x10: 00000000 00000000 00000000 00000000
+  +0x20: 00000000 00000000 00000000 00000000
+  +0x30: 00000000 00000000 00000000 00000000
+
+--writeback-test WRITES to an L2CPU RNMI handler register (then restores it).
+type 'yes' to proceed: yes
+
+==========================================================================
+  WRITABILITY TEST (writes!) hart0 RNMI handler @0x20010418  tile (8,3)
+==========================================================================
+  original : 00000000 00000000
+  wrote    : 20010100 00000000
+  readback : 20010100 00000000
+
+  => RNMI handler register is WRITABLE post-reset ✓
+  restored : 00000000 00000000  (verified)
+
+==========================================================================
+  VERDICT
+==========================================================================
+  access path  : reads via NoC0 SUCCEEDED on 4 tile(s) — passthrough peripheral window is reachable, no hang observed.
+  RNMI handlers: all unset (no seize handler installed yet)
+  reset addrs  : set on >=1 hart
+  pending RNMIs: [0, 0, 0, 0]
+  WRITABILITY  : RNMI handler reg is WRITABLE now ✓ (seize installable in-place)
+
+
+(.venv) starboy@ttstar:~/bhtop$ python scripts/probe_l2cpu_rnmi.py --writeback-test --yes --dump-reset
+L2CPU RNMI probe — READ-ONLY  +WRITEBACK TEST
+  NoC=0  device=0  safe_mode=False (intentional)
+  L2CPU is in the NoC0-hang hazard zone. If anything wedges: run  tt-smi -r 0  on ttstar.
+
+L2CPU tiles to probe: [(8, 3), (8, 5), (8, 7), (8, 9)]
+
+canary: reading 1 word @0x20010000 on (8,3) via NoC0 ...
+canary ok: D0000000  (0.0 ms)
+
+==========================================================================
+  L2CPU tile noc0=(8,3)   loc=l0,0   via NoC0
+==========================================================================
+
+[reset handlers]  0x20010000  (0.0 ms)
+  raw: D0000000 00000000 D0000000 00000000 D0000000 00000000 D0000000 00000000
+  hart0: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart1: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart2: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart3: 0x00000000D0000000  [GDDR6 (uncached)]
+
+[RNMI handlers]   0x20010418  (0.0 ms)
+  raw: 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+  hart0: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart1: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart2: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart3: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+
+[RNMI trigger]    0x20010414  (0.0 ms)
+  raw: 00000000   pending harts: none
+
+[scratch 64B]     0x20010100  (0.0 ms)   empty
+  +0x00: 00000000 00000000 00000000 00000000
+  +0x10: 00000000 00000000 00000000 00000000
+  +0x20: 00000000 00000000 00000000 00000000
+  +0x30: 00000000 00000000 00000000 00000000
+
+==========================================================================
+  L2CPU tile noc0=(8,5)   loc=l0,1   via NoC0
+==========================================================================
+
+[reset handlers]  0x20010000  (0.0 ms)
+  raw: D0000000 00000000 D0000000 00000000 D0000000 00000000 D0000000 00000000
+  hart0: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart1: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart2: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart3: 0x00000000D0000000  [GDDR6 (uncached)]
+
+[RNMI handlers]   0x20010418  (0.0 ms)
+  raw: 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+  hart0: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart1: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart2: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart3: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+
+[RNMI trigger]    0x20010414  (0.0 ms)
+  raw: 00000000   pending harts: none
+
+[scratch 64B]     0x20010100  (0.0 ms)   empty
+  +0x00: 00000000 00000000 00000000 00000000
+  +0x10: 00000000 00000000 00000000 00000000
+  +0x20: 00000000 00000000 00000000 00000000
+  +0x30: 00000000 00000000 00000000 00000000
+
+==========================================================================
+  L2CPU tile noc0=(8,7)   loc=l0,2   via NoC0
+==========================================================================
+
+[reset handlers]  0x20010000  (0.0 ms)
+  raw: D0000000 00000000 D0000000 00000000 D0000000 00000000 D0000000 00000000
+  hart0: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart1: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart2: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart3: 0x00000000D0000000  [GDDR6 (uncached)]
+
+[RNMI handlers]   0x20010418  (0.0 ms)
+  raw: 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+  hart0: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart1: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart2: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart3: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+
+[RNMI trigger]    0x20010414  (0.0 ms)
+  raw: 00000000   pending harts: none
+
+[scratch 64B]     0x20010100  (0.0 ms)   empty
+  +0x00: 00000000 00000000 00000000 00000000
+  +0x10: 00000000 00000000 00000000 00000000
+  +0x20: 00000000 00000000 00000000 00000000
+  +0x30: 00000000 00000000 00000000 00000000
+
+==========================================================================
+  L2CPU tile noc0=(8,9)   loc=l0,3   via NoC0
+==========================================================================
+
+[reset handlers]  0x20010000  (0.0 ms)
+  raw: D0000000 00000000 D0000000 00000000 D0000000 00000000 D0000000 00000000
+  hart0: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart1: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart2: 0x00000000D0000000  [GDDR6 (uncached)]
+  hart3: 0x00000000D0000000  [GDDR6 (uncached)]
+
+[RNMI handlers]   0x20010418  (0.0 ms)
+  raw: 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+  hart0: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart1: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart2: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+  hart3: trap=0x0000000000000000 [unset (0)]   exc=0x0000000000000000 [unset (0)]
+
+[RNMI trigger]    0x20010414  (0.0 ms)
+  raw: 00000000   pending harts: none
+
+[scratch 64B]     0x20010100  (0.0 ms)   empty
+  +0x00: 00000000 00000000 00000000 00000000
+  +0x10: 00000000 00000000 00000000 00000000
+  +0x20: 00000000 00000000 00000000 00000000
+  +0x30: 00000000 00000000 00000000 00000000
+
+==========================================================================
+  reset-vector dump: 16 words @0xD0000000  (hart0 of (8, 3))
+==========================================================================
+  NON-ZERO (code present)  (0.0 ms)
+  +0x00: E2E67124 4D08E766 EA9D3745 A156EED1
+  +0x10: 7594AD82 D2AE3B27 F6138067 455EAA39
+  +0x20: 91AED6D1 2951D1BD ADE5A439 8C7C5A79
+  +0x30: 33EA2643 51DA6BEB 1BBAA752 3E6E38DD
+
+==========================================================================
+  WRITABILITY TEST (writes!) hart0 RNMI handler @0x20010418  tile (8,3)
+==========================================================================
+  original : 00000000 00000000
+  wrote    : 20010100 00000000
+  readback : 20010100 00000000
+
+  => RNMI handler register is WRITABLE post-reset ✓
+  restored : 00000000 00000000  (verified)
+
+==========================================================================
+  VERDICT
+==========================================================================
+  access path  : reads via NoC0 SUCCEEDED on 4 tile(s) — passthrough peripheral window is reachable, no hang observed.
+  RNMI handlers: all unset (no seize handler installed yet)
+  reset addrs  : set on >=1 hart
+  pending RNMIs: [0, 0, 0, 0]
+  WRITABILITY  : RNMI handler reg is WRITABLE now ✓ (seize installable in-place)
+
+(.venv) starboy@ttstar:~/bhtop$ 
+
+
+
+
+(.venv) starboy@ttstar:~/bhtop$ .venv/bin/python scripts/l2cpu_bringup.py --release
+L2CPU bringup — tile index 0 = noc0 (8, 3), L2CPU_RESET bit 4 (RELEASE)
+  NoC via tt-exalens, ARC via pyluwen axi. If anything wedges: tt-smi -r 0.
+
+canary reset-vec[h0]=0x20010100 (sane)   hart status=0x0000
+L2CPU_RESET=0x0000000F  (tile bit 4 = clear — in reset)
+
+staged heartbeat @0x20010100: 200102B7 00000313 00130313 1262AC23 FF9FF06F  (verified)
+reset vectors: h0=0x20010100  h1=0x20010120  h2=0x20010120  h3=0x20010120
+
+--release will bring tile (8, 3) harts OUT OF RESET — IRREVERSIBLE until tt-smi -r 0.
+type 'release' to proceed: release
+
+releasing:
+  L2SYS clock -> 200 MHz
+  L2CPU_RESET -> 0x0000001F  (bit 4 set ✓)
+  L2SYS clock -> 1750 MHz
+
+polling heartbeat @0x20010138 ...
+  counter moving: 0x8c7f4 -> 0x8eddc7  <-- harts ALIVE, running our bootstrap
+
+============================================================
+  SUCCESS: tile (8, 3) hart 0 is OUT OF RESET executing our heartbeat.
+  => Stage 3 (real bootstrap: RNMI park + on-the-fly reload) is unblocked.
+============================================================
+(.venv) starboy@ttstar:~/bhtop$ .venv/bin/python scripts/l2cpu_dram_probe.py
+L2CPU local-DRAM writability probe — tile (8, 3), write+restore.
+
+  0x0030000000: orig=0xBFAC8332 wrote=0xC0DEF00D read=0xC0DEF00D restored=0xBFAC8332  -> WRITABLE ✓
+  0x0030000040: orig=0x7F590664 wrote=0xC0DEF00D read=0xC0DEF00D restored=0x7F590664  -> WRITABLE ✓
+  0x0030000080: orig=0xFEB20CC8 wrote=0xC0DEF00D read=0xC0DEF00D restored=0xFEB20CC8  -> WRITABLE ✓
+  0x00D0000000: orig=0xE2E67124 wrote=0xC0DEF00D read=0xC0DEF00D restored=0xE2E67124  -> WRITABLE ✓
+
+DRAM is writable. Stage 3 can place code at: 0x30000000, 0x30000040, 0x30000080, 0xD0000000
+(l2cpu_redirect.py defaults to 0x30000000 for the trampoline + 0x30000040 for v2.)
+(.venv) starboy@ttstar:~/bhtop$ .venv/bin/python scripts/l2cpu_redirect.py  
+L2CPU on-the-fly redirect — tile (8, 3) hart 0 (STAGE only)
+  v1 counter @0x20010138 -> redirect -> v2 counter @0x20010130
+  transport: tt-exalens. If anything wedges: tt-smi -r 0.
+
+canary: reset-vec[h0]=0xD0000000   v1 counter 0x0 -> 0x0  (NOT moving — hart0 not on v1?)
+  v1 not climbing — bring up the harts first (l2cpu_bringup.py --release). Aborting.
+(.venv) starboy@ttstar:~/bhtop$ .venv/bin/python scripts/l2cpu_bringup.py --release
+L2CPU bringup — tile index 0 = noc0 (8, 3), L2CPU_RESET bit 4 (RELEASE)
+  NoC via tt-exalens, ARC via pyluwen axi. If anything wedges: tt-smi -r 0.
+
+canary reset-vec[h0]=0xD0000000 (sane)   hart status=0x0000
+L2CPU_RESET=0x0000000F  (tile bit 4 = clear — in reset)
+
+staged heartbeat @0x20010100: 200102B7 00000313 00130313 1262AC23 FF9FF06F  (verified)
+reset vectors: h0=0x20010100  h1=0x20010120  h2=0x20010120  h3=0x20010120
+
+--release will bring tile (8, 3) harts OUT OF RESET — IRREVERSIBLE until tt-smi -r 0.
+type 'release' to proceed: release
+
+releasing:
+  L2SYS clock -> 200 MHz
+  L2CPU_RESET -> 0x0000001F  (bit 4 set ✓)
+  L2SYS clock -> 1750 MHz
+
+polling heartbeat @0x20010138 ...
+  counter moving: 0x8f4a9 -> 0x8f3edc  <-- harts ALIVE, running our bootstrap
+
+============================================================
+  SUCCESS: tile (8, 3) hart 0 is OUT OF RESET executing our heartbeat.
+  => Stage 3 (real bootstrap: RNMI park + on-the-fly reload) is unblocked.
+============================================================
+(.venv) starboy@ttstar:~/bhtop$ .venv/bin/python scripts/l2cpu_redirect.py  
+L2CPU on-the-fly redirect — tile (8, 3) hart 0 (STAGE only)
+  v1 counter @0x20010138 -> redirect -> v2 counter @0x20010130
+  transport: tt-exalens. If anything wedges: tt-smi -r 0.
+
+canary: reset-vec[h0]=0x20010100   v1 counter 0xeb002b -> 0x1285a58  (CLIMBING — hart0 alive on v1)
+staged trampoline @0x30000000 + v2 @0x30000040  (verified)
+set RNMI trap[h0]=0x30000000  exc[h0]=0x20010120  reset-vec[h0]=0x30000040
+
+STAGED ONLY. Code + handlers set; trigger NOT pulled — hart0 still running v1.
+Re-run with --fire to pull the RNMI trigger and redirect hart0 to v2.
+(.venv) starboy@ttstar:~/bhtop$ .venv/bin/python scripts/l2cpu_redirect.py  --fire
+L2CPU on-the-fly redirect — tile (8, 3) hart 0 (FIRE)
+  v1 counter @0x20010138 -> redirect -> v2 counter @0x20010130
+  transport: tt-exalens. If anything wedges: tt-smi -r 0.
+
+canary: reset-vec[h0]=0x30000040   v1 counter 0x17e65d4 -> 0x1bbbdf9  (CLIMBING — hart0 alive on v1)
+staged trampoline @0x30000000 + v2 @0x30000040  (verified)
+set RNMI trap[h0]=0x30000000  exc[h0]=0x20010120  reset-vec[h0]=0x30000040
+
+--fire will SEIZE hart0 and redirect it from v1 to v2 (live, no reset).
+type 'fire' to proceed: fire
+
+fired RNMI trigger bit0.
+  v1 counter @0x20010138: 0x1062a2a0 -> 0x1062a2a0  (FROZEN ✓)
+  v2 counter @0x20010130: 0xb7f15b -> 0xf54dcf  (CLIMBING ✓)
+  trigger now 0x00000000  (v2 clears it; expect 0)
+
+==============================================================
+  SUCCESS: hart0 redirected v1 -> v2 LIVE, with no reset.
+  Repeatable: write v3 to DRAM, set reset-vec[h0] to it, pull the trigger again.
+==============================================================
+
+prompt>
+yes, we want to make it the real loader and be able to compile sources and load onto any l2cpu! is it possible to ssh tunnel into linux on the l2cpu running from dram? Yes yes yes I want an interactive loader and good examples and easy telemetry insertion with doc links for assembler, c, rust toolchains. Make sure you update the readme and plan with install so I can configure
+
+
+starboy@ttstar:~$    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+   . "$HOME/.cargo/env"
+   rustup target add riscv64gc-unknown-none-elf   # = RV64GC, lp64d, no_std (exactly x280)
+info: downloading installer
+warn: It looks like you have an existing installation of Rust at:
+warn: /usr/bin
+warn: It is recommended that rustup be the primary Rust installation.
+warn: Otherwise you may have confusion unless you are careful with your PATH.
+warn: If you are sure that you want both rustup and your already installed Rust
+warn: then please reply `y' or `yes' or set RUSTUP_INIT_SKIP_PATH_CHECK to yes
+warn: or pass `-y' to ignore all ignorable checks.
+error: cannot install while Rust is installed
+warn: continuing (because the -y flag is set and the error is ignorable)
+warn: It looks like you have an existing rustup settings file at:
+warn: /home/starboy/.rustup/settings.toml
+warn: Rustup will install the default toolchain as specified in the settings file,
+warn: instead of the one inferred from the default host triple.
+info: profile set to default
+info: default host triple is x86_64-unknown-linux-gnu
+info: syncing channel updates for stable-x86_64-unknown-linux-gnu
+info: latest update on 2026-05-28 for version 1.96.0 (ac68faa20 2026-05-25)
+info: downloading 6 components
+        cargo installed                       10.64 MiB
+       clippy installed                        4.58 MiB
+    rust-docs installed                       21.29 MiB
+     rust-std installed                       28.36 MiB
+        rustc installed                       76.47 MiB
+      rustfmt installed                        2.06 MiBinfo: default toolchain set to stable-x86_64-unknown-linux-gnu
+
+  stable-x86_64-unknown-linux-gnu installed - rustc 1.96.0 (ac68faa20 2026-05-25)
+
+
+Rust is installed now. Great!
+
+To get started you may need to restart your current shell.
+This would reload your PATH environment variable to include
+Cargo's bin directory ($HOME/.cargo/bin).
+
+To configure your current shell, you need to source
+the corresponding env file under $HOME/.cargo.
+
+This is usually done by running one of the following (note the leading DOT):
+. "$HOME/.cargo/env"            # For sh/bash/zsh/ash/dash/pdksh
+source "$HOME/.cargo/env.fish"  # For fish
+source "~/.cargo/env.nu"  # For nushell
+source "$HOME/.cargo/env.tcsh"  # For tcsh
+. "$HOME/.cargo/env.ps1"        # For pwsh
+source "$HOME/.cargo/env.xsh"   # For xonsh
+info: downloading component rust-std
+     rust-std installed                       11.37 MiB                                                                                      starboy@ttstar:~$ 

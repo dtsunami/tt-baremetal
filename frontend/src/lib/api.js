@@ -24,3 +24,19 @@ export function fmtBW(b) {
 }
 
 export const tileKey = (noc0) => `${noc0[0]},${noc0[1]}`
+
+// Poll an async-job `*/last` endpoint ({running, result}) until it finishes, then call
+// onDone(d). Replaces the per-lab setTimeout-recursion pollers. Returns a cancel fn.
+export function pollJob(url, onDone, interval = 2000) {
+  let cancelled = false
+  const tick = async () => {
+    if (cancelled) return
+    let d
+    try { d = await getJSON(url) } catch (e) { if (!cancelled) onDone({ error: String(e) }); return }
+    if (cancelled) return
+    if (d.running) setTimeout(tick, interval)
+    else onDone(d)
+  }
+  setTimeout(tick, interval)
+  return () => { cancelled = true }
+}

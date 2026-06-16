@@ -146,3 +146,34 @@ Source: tenstorrent/tt-isa-documentation `BlackholeA0/NoC/{Counters,MemoryMap}.m
 Ethernet tiles show steady link-keepalive traffic; DRAM tiles show a small
 background read trickle (driver/ARC telemetry). Everything else is dark until a
 kernel runs.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+What are these cores actually good for?
+Worth stepping back, because the L2CPU is unusual. Each tile is 4× SiFive X280 — and the X280 isn't a plain control core, it's an AI core: RV64GC plus a 512-bit RVV vector unit and SiFive's matrix/ML extensions. You've got 16 of them, Linux-capable, and — the key thing — sitting directly on the chip's NoC. They can read/write any tile (Tensix L1, GDDR, other tiles' registers) at NoC latency, with no PCIe in the path. The host can only reach the NoC through PCIe + tt-exalens; these cores are inside the fabric.
+
+That one fact — in-fabric access — is what makes them special. Best uses, roughly in order of fit with what you're building:
+
+1. On-chip NoC instrumentation (the bhtop killer app). Use an x280 as a probe living in the fabric: sweep the NoC address map, read every tile's counters, generate precise traffic from inside, and time tile-to-tile latency/bandwidth at resolutions the PCIe path can't touch. This is your reverse-engineering mission, but from a vantage point the host doesn't have. The cockpit already does deploy-live + telemetry — a "NoC probe" kernel that reports findings via telemetry is a tiny step from here.
+
+2. On-chip control plane / dispatch. Run the orchestration that normally lives on the host — command queues, dispatching work to Tensix, synchronization — at NoC latency instead of PCIe round-trips. Big for latency-bound serving (LLM decode).
+
+3. Data-movement / preprocessing engine. Sit between GDDR and Tensix doing gather/scatter, layout conversion, decompression, tokenization, KV-cache management. Keep data on-card, offload the host; the vector unit earns its keep here.
+
+4. Heterogeneous vector compute. Tensix is great at dense dataflow but awkward at irregular/sequential ops. The x280's RVV handles the glue — softmax/sampling, activations, top-k, dynamic shapes, control-flow-heavy code. A Tensix-does-matmul / x280-does-the-rest pipeline.
+
+5. Linux services on the accelerator. Boot Debian (already proven), SSH in, run an on-card agent: monitoring, a model-server control plane, even a fabric debugger. The card becomes a self-contained node.
+
+6. Lights-out fabric monitor. Literally "bhtop-on-chip" — one x280 continuously samples NoC counters, watches for hangs/hotspots, logs traffic, independent of the host.

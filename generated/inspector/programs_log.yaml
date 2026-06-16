@@ -1,66 +1,66 @@
 - program_created:
     id: 0
-    timestamp_ns: 1781120756536275359
+    timestamp_ns: 1781319770080776754
 - program_compile_started:
     id: 0
-    timestamp_ns: 1781120756536662079
+    timestamp_ns: 1781319770081272364
 - program_kernel_compile_finished:
     id: 0
-    timestamp_ns: 1781120756540617134
-    duration_ns: 3955055
+    timestamp_ns: 1781319770084061192
+    duration_ns: 2788828
     watcher_kernel_id: 3
     name: cq_dispatch_subordinate
     path: /home/starboy/.cache/tt-metal-cache/11605648253820150612/kernels/cq_dispatch_subordinate/14342226925289368538/
     source: tt_metal/impl/dispatch/kernels/cq_dispatch_subordinate.cpp
 - program_kernel_compile_finished:
     id: 0
-    timestamp_ns: 1781120756544243503
-    duration_ns: 7581424
+    timestamp_ns: 1781319770087569688
+    duration_ns: 6297324
+    watcher_kernel_id: 1
+    name: cq_prefetch
+    path: /home/starboy/.cache/tt-metal-cache/11605648253820150612/kernels/cq_prefetch/13830762906219612774/
+    source: tt_metal/impl/dispatch/kernels/cq_prefetch.cpp
+- program_kernel_compile_finished:
+    id: 0
+    timestamp_ns: 1781319770088448111
+    duration_ns: 7175747
     watcher_kernel_id: 2
     name: cq_dispatch
     path: /home/starboy/.cache/tt-metal-cache/11605648253820150612/kernels/cq_dispatch/13671003327365429095/
     source: tt_metal/impl/dispatch/kernels/cq_dispatch.cpp
 - program_kernel_compile_finished:
     id: 0
-    timestamp_ns: 1781120756547259205
-    duration_ns: 10597126
+    timestamp_ns: 1781319770090706352
+    duration_ns: 9433988
     watcher_kernel_id: 4
     name: cq_dispatch_subordinate_compute
     path: /home/starboy/.cache/tt-metal-cache/11605648253820150612/kernels/cq_dispatch_subordinate_compute/18276179149802009854/
     source: tt_metal/impl/dispatch/kernels/cq_dispatch_subordinate_compute.cpp
-- program_kernel_compile_finished:
-    id: 0
-    timestamp_ns: 1781120756547563478
-    duration_ns: 10901399
-    watcher_kernel_id: 1
-    name: cq_prefetch
-    path: /home/starboy/.cache/tt-metal-cache/11605648253820150612/kernels/cq_prefetch/13830762906219612774/
-    source: tt_metal/impl/dispatch/kernels/cq_prefetch.cpp
 - program_compile_finished:
     id: 0
-    timestamp_ns: 1781120756547651808
-    duration_ns: 10989729
+    timestamp_ns: 1781319770090811455
+    duration_ns: 9539091
 - program_created:
     id: 1
-    timestamp_ns: 1781120756593175710
+    timestamp_ns: 1781319770131113560
 - program_created:
     id: 2
-    timestamp_ns: 1781120756601557977
+    timestamp_ns: 1781319770417775404
 - program_destroyed:
     id: 2
-    timestamp_ns: 1781120756601563348
+    timestamp_ns: 1781319770417782807
 - program_compile_started:
     id: 1
-    timestamp_ns: 1781120756601575545
+    timestamp_ns: 1781319770417798890
 - program_kernel_compile_finished:
     id: 1
-    timestamp_ns: 1781120756604023325
-    duration_ns: 2447780
+    timestamp_ns: 1781319770420529630
+    duration_ns: 2730740
     watcher_kernel_id: 5
-    name: sender_2_0
-    path: /home/starboy/.cache/tt-metal-cache/11605648253820150612/kernels/sender_2_0/3133804146446793093/
-    source: tests/tt_metal/tt_metal/data_movement/one_to_one/kernels/sender_2_0.cpp
+    name: requestor_2_0
+    path: /home/starboy/.cache/tt-metal-cache/11605648253820150612/kernels/requestor_2_0/1882614330110513605/
+    source: tests/tt_metal/tt_metal/data_movement/all_from_all/kernels/requestor_2_0.cpp
 - program_compile_finished:
     id: 1
-    timestamp_ns: 1781120756604033741
-    duration_ns: 2458196
+    timestamp_ns: 1781319770420590495
+    duration_ns: 2791605

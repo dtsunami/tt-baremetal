@@ -10,6 +10,7 @@ to its built-in injection patterns.
 """
 import csv
 import os
+import re
 import subprocess
 
 from . import noc_counters as nc
@@ -40,7 +41,7 @@ def available():
     return binary() is not None
 
 
-def _env():
+def _env(dprint_cores=None):
     h = metal_home()
     e = dict(os.environ)
     e["TT_METAL_HOME"] = h
@@ -49,7 +50,20 @@ def _env():
     e["PYTHONPATH"] = h
     e["LD_LIBRARY_PATH"] = f"{h}/build_Release/lib:" + e.get("LD_LIBRARY_PATH", "")
     e["TT_METAL_DEVICE_PROFILER"] = "1"
+    e["TT_METAL_INSPECTOR"] = "1"       # dump generated/inspector/*.yaml: kernel hash <-> source <-> program
+    e.setdefault("TT_METAL_INSPECTOR_LOG_PATH", os.path.join(h, "generated", "inspector"))
+    if dprint_cores:
+        e["TT_METAL_DPRINT_CORES"] = dprint_cores   # on-device printf from kernels -> stdout
     return e
+
+
+# DPRINT lines look like "0:(x=1,y=2):BR: my message" (device:core:risc: text).
+_DPRINT_RE = re.compile(r"^\d+:\(x=\d+,y=\d+\):[A-Z0-9]+:")
+
+
+def extract_dprint(stdout):
+    """Pull the on-device DPRINT lines out of a run's stdout."""
+    return [ln for ln in stdout.splitlines() if _DPRINT_RE.match(ln.strip())]
 
 
 def list_tests(substr="DirectedIdeal"):
@@ -66,12 +80,13 @@ def list_tests(substr="DirectedIdeal"):
     return names
 
 
-def run_test(name, timeout=900):
-    """Run one gtest by name. Returns (passed, stdout). Device is owned by tt-metal here."""
+def run_test(name, timeout=900, dprint_cores=None):
+    """Run one gtest by name. Returns (passed, stdout). Device is owned by tt-metal here.
+    Pass dprint_cores (e.g. "0,0") to capture on-device DPRINT output in stdout."""
     b = binary()
     if not b:
         raise RuntimeError("tt-metal not found (set TT_METAL_HOME)")
-    r = subprocess.run([b, f"--gtest_filter=*{name}"], env=_env(),
+    r = subprocess.run([b, f"--gtest_filter=*{name}"], env=_env(dprint_cores),
                        capture_output=True, text=True, timeout=timeout)
     return ("[  PASSED  ]" in r.stdout), r.stdout
 
@@ -79,6 +94,86 @@ def run_test(name, timeout=900):
 def profiler_csv():
     h = metal_home()
     return os.path.join(h, "generated/profiler/.logs/profile_log_device.csv") if h else None
+
+
+# ---- Tensix COMPUTE lab (tlab): run a standalone programming_example + read its per-engine
+# compute zones. These are SEPARATE binaries (not the data_movement gtest), and the compute
+# zones are named "<PROC>-KERNEL" on processors TRISC_0/1/2 (UNPACK/MATH/PACK) — which
+# aggregate_bw drops (it filters zone-name startswith "RISCV"). ----
+def examples_dir():
+    h = metal_home()
+    if not h:
+        return None
+    for sub in ("build_Release", "build"):
+        d = os.path.join(h, sub, "programming_examples")
+        if os.path.isdir(d):
+            return d
+    return None
+
+
+def compute_examples():
+    """Prebuilt standalone compute programming_examples (the Tensix UNPACK/MATH/PACK ones)."""
+    d = examples_dir()
+    if not d:
+        return []
+    keep = ("compute", "matmul", "eltwise", "sfpu", "add_2_integers_in_compute")
+    return sorted(n for n in os.listdir(d)
+                  if os.path.isfile(os.path.join(d, n)) and os.access(os.path.join(d, n), os.X_OK)
+                  and any(k in n for k in keep))
+
+
+def run_example(name, timeout=900):
+    """Run a standalone compute programming_example by name (e.g.
+    'metal_example_add_2_integers_in_compute'). tt-metal owns + resets the device for the run
+    (so the L2CPU/x280 harts go back to reset). Returns (passed, combined stdout+stderr)."""
+    d = examples_dir()
+    p = os.path.join(d, os.path.basename(name)) if d else None
+    if not p or not os.path.exists(p):
+        raise RuntimeError(f"compute example not found: {name}")
+    # fresh CSV so we only see this run's zones
+    c = profiler_csv()
+    if c and os.path.exists(c):
+        try:
+            os.remove(c)
+        except OSError:
+            pass
+    r = subprocess.run([p], env=_env(), cwd=metal_home(), capture_output=True, text=True, timeout=timeout)
+    return (r.returncode == 0), (r.stdout or "") + (r.stderr or "")
+
+
+# Tensix RISC processor (profiler col 3) -> role. TRISC_0/1/2 = the compute triad.
+_TRISC_ROLE = {"NCRISC": "reader", "BRISC": "writer",
+               "TRISC_0": "unpack", "TRISC_1": "math", "TRISC_2": "pack"}
+
+
+def aggregate_compute(csv_path=None):
+    """Per-Tensix-core busy cycles for each engine (reader/writer DM + UNPACK/MATH/PACK) from
+    the `<PROC>-KERNEL` profiler zones, plus a MATH-vs-wall occupancy. The honest Tier-1
+    compute metric (coarse per-engine spans); true math-utilization needs instrumented kernels."""
+    csv_path = csv_path or profiler_csv()
+    if not csv_path or not os.path.exists(csv_path):
+        return None
+    zones = {}                                          # (cx,cy,proc) -> {start,end}
+    for r in csv.reader(open(csv_path)):
+        if not r or not r[0].isdigit() or len(r) < 12:
+            continue
+        cx, cy, proc, cyc, zname, typ = r[1], r[2], r[3], int(r[5]), r[10], r[11]
+        if zname.endswith("-KERNEL") and typ in ("ZONE_START", "ZONE_END"):
+            zones.setdefault((cx, cy, proc), {})["start" if typ == "ZONE_START" else "end"] = cyc
+    cores = {}                                          # "x,y" -> {role: cycles}
+    for (cx, cy, proc), s in zones.items():
+        if "start" in s and "end" in s:
+            cores.setdefault(f"{cx},{cy}", {})[_TRISC_ROLE.get(proc, proc.lower())] = s["end"] - s["start"]
+    if not cores:
+        return None
+    out = {}
+    for core, eng in cores.items():
+        wall = max(eng.values()) if eng else 0          # per-core wall = slowest engine
+        out[core] = {"engines": eng, "wall": wall,
+                     "math_occ": round(eng.get("math", 0) / wall, 4) if wall else 0.0}
+    n = len(out)
+    return {"cores": out, "n_cores": n, "freq": FREQ,
+            "avg_math_occ": round(sum(c["math_occ"] for c in out.values()) / n, 4) if n else 0.0}
 
 
 def aggregate_bw(csv_path=None):

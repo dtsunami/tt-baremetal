@@ -13,3 +13,66 @@ class InjectRequest(BaseModel):
 class KernelRunRequest(BaseModel):
     name: str                 # gtest name from /api/kernels
     timeout: int = 1800       # first run JIT-compiles kernels — can take >15 min
+    dprint: bool = False      # enable on-device DPRINT capture (slower; floods on big grids)
+    dprint_cores: str = "0,0" # TT_METAL_DPRINT_CORES value when dprint is on
+
+
+class LabWriteRequest(BaseModel):
+    path: str                 # project-relative source path from /api/lab/files
+    content: str
+
+
+class LabPathRequest(BaseModel):
+    path: str                 # project-relative source path (revert)
+
+
+class LabBuildRequest(BaseModel):
+    target: str = "unit_tests_data_movement"
+
+
+# ---- L2CPU cockpit ----
+class L2DeployRequest(BaseModel):
+    tile: int                 # 0..3
+    hart: int                 # 0..3
+    content: str              # kernel source (the editor buffer)
+    lang: str = "c"           # c | asm | rust
+    addr: int = 0x30001000    # load address (default user-code window)
+    name: str = ""            # source filename, recorded so the UI shows what's on each hart
+
+
+class L2CompileRequest(BaseModel):
+    content: str
+    lang: str = "c"
+    addr: int = 0x30001000
+
+
+class L2TileRequest(BaseModel):
+    tile: int
+    hart: int | None = None   # optional: tele/zero a single hart's window (None = all)
+
+
+class L2WriteRequest(BaseModel):
+    name: str                 # workspace filename from /api/l2/files
+    content: str
+
+
+class L2NewRequest(BaseModel):
+    name: str
+    lang: str = "c"
+
+
+class L2PokeRequest(BaseModel):
+    tile: int
+    addr: int
+    val: int
+
+
+# ---- tlab: Tensix Compute Lab ----
+class TlabRunRequest(BaseModel):
+    name: str                 # compute example binary name from /api/tlab/examples
+    timeout: int = 900        # JIT-compiles compute kernels on first run
+
+
+class CopyRequest(BaseModel):
+    src: str                  # existing file (path or name) to duplicate
+    name: str                 # new file name for the copy (a fresh variation)

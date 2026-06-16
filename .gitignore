@@ -6,3 +6,6 @@ build/
 dist/
 node_modules/
 frontend/dist/
+
+# kernel-lab ISA docs disk cache
+.isa_cache/
