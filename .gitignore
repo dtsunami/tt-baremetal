@@ -9,3 +9,11 @@ frontend/dist/
 
 # kernel-lab ISA docs disk cache
 .isa_cache/
+
+# tt-metal Inspector/watcher dumps — regenerated each run; web/inspector.py reads the live
+# copy under $TT_METAL_HOME and degrades gracefully when absent
+generated/
+
+# L2CPU kernel workspace — a private scratch space seeded from src/bhtop/l2cpu/examples/ on
+# first run (l2lab._ensure_workspace); edits here are local experiments, not shipped sources
+l2cpu_kernels/

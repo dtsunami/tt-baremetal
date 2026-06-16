@@ -1,6 +1,0 @@
-0: blank
-3: /home/starboy/.cache/tt-metal-cache/11605648253820150612/kernels/cq_dispatch_subordinate/14342226925289368538//ncrisc/ncrisc.elf
-1: /home/starboy/.cache/tt-metal-cache/11605648253820150612/kernels/cq_prefetch/13830762906219612774//brisc/brisc.elf
-2: /home/starboy/.cache/tt-metal-cache/11605648253820150612/kernels/cq_dispatch/13671003327365429095//brisc/brisc.elf
-4: /home/starboy/.cache/tt-metal-cache/11605648253820150612/kernels/cq_dispatch_subordinate_compute/18276179149802009854//trisc0/trisc0.elf:/home/starboy/.cache/tt-metal-cache/11605648253820150612/kernels/cq_dispatch_subordinate_compute/18276179149802009854//trisc1/trisc1.elf:/home/starboy/.cache/tt-metal-cache/11605648253820150612/kernels/cq_dispatch_subordinate_compute/18276179149802009854//trisc2/trisc2.elf
-5: /home/starboy/.cache/tt-metal-cache/11605648253820150612/kernels/requestor_2_0/1882614330110513605//ncrisc/ncrisc.elf

@@ -3,6 +3,12 @@
 `top` for the Tenstorrent **Blackhole** Network-on-Chip — live NoC telemetry
 read straight from the per-tile NIU hardware performance counters.
 
+![bhtop web UI — the unified device-hierarchy browser](pics/bhtop.png)
+
+*The `bhtop-web` cockpit: a device-hierarchy tree (NOC / X280 / TENSIX) on the left, a shared
+code editor in the middle, and the live engine pane on the right — here an L2CPU x280 hart
+streaming per-slot telemetry (the orange heartbeat counter).*
+
 ## Install
 
 ```bash
@@ -101,6 +107,22 @@ touches `tensix/dram/eth` (verified: 156/163 tiles, 0 management). The overlay s
 *footprint* (tiles aren't visible under the lid); re-tune `CARD_PACKAGE_PX` in `geometry.py` if it
 drifts. Inject + kernel-deploy panels build on this same serialized owner. Dev: run the backend on
 `:8000` and `npm run dev` for the Vite server (it proxies `/api` + `/ws`).
+
+### Device browser & labs (`#/browser`)
+
+A unified **develop → deploy → observe** cockpit (the screenshot above): a left **device-hierarchy
+tree** with sections for **NOC** (data-movement kernels), **X280** (L2CPU bare-metal RISC-V), and
+**TENSIX** (compute engines) — plus DRAM/ETH stubbed for later. Selecting a source file switches
+the right pane to that engine's view: NOC shows Build/Run + per-NoC footprint, TENSIX shows
+per-engine occupancy + disassembly, X280 shows tile/hart deploy controls + live per-hart telemetry.
+File ops are capability-aware — X280 edits a private workspace (new/duplicate/rename/delete), while
+NOC/TENSIX edit the real tt-metal sources in place (duplicate-as-scratch; Run JIT-picks up edits).
+
+**Running kernels are tracked by JIT build hash.** With the tt-metal Inspector enabled
+(`web/inspector.py`), `/api/running` maps each live kernel `source → hash → program → core coords`,
+so the tree badges a file **running** (●) and the editor flags it **stale** once you edit past the
+running build — no mtime guessing, and the disassembly correctly assembles all five RISC engines
+across their separate hash dirs. The three labs also stand alone at `#/kernel`, `#/hart`, `#/compute`.
 
 ## Architecture / dependencies
 
