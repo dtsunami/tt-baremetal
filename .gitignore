@@ -1,8 +1,0 @@
-# VSCode tunnel / server state (created at runtime on the instance)
-.vscode-server/
-.vscode/
-
-# OS / editor cruft
-.DS_Store
-Thumbs.db
-*.swp
