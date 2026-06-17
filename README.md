@@ -176,14 +176,10 @@ kernel runs.
   + exalens https://github.com/tenstorrent/tt-exalens
 
 
+## X280 
 
+![alt text](pics/sifive_x280.png)
 ![alt text](pics/vcix.png)
-
-
-
-
-## Dependents
-
 
 
 What are these cores actually good for?
