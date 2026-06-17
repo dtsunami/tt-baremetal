@@ -6,7 +6,7 @@ OUTPUT_FORMAT("elf64-littleriscv")
 OUTPUT_ARCH(riscv)
 ENTRY(_start)
 
-LOAD_ADDR = DEFINED(LOAD_ADDR) ? LOAD_ADDR : 0x30001000;
+LOAD_ADDR = DEFINED(LOAD_ADDR) ? LOAD_ADDR : 0x30008000;  /* toolchain passes --defsym=LOAD_ADDR=<regmap.CODE_ADDR> */
 STACK_SIZE = 0x4000;          /* 16 KiB */
 
 SECTIONS

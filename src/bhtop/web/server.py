@@ -18,7 +18,8 @@ from .device import DeviceManager, CARD_PATH
 from .schemas import (InjectRequest, KernelRunRequest, LabWriteRequest,
                       LabPathRequest, LabBuildRequest, L2DeployRequest,
                       L2CompileRequest, L2TileRequest, L2WriteRequest,
-                      L2NewRequest, L2PokeRequest, TlabRunRequest, CopyRequest)
+                      L2NewRequest, L2PokeRequest, L2CommandRequest, L2FreqRequest,
+                      TlabRunRequest, CopyRequest)
 from ..patterns import PATTERN_INFO
 
 app = FastAPI(title="bhtop-web")
@@ -127,6 +128,26 @@ async def running():
     """tt-metal kernels live now, keyed by JIT build hash (source<->hash<->program<->coords).
     Drives the device tree's running/stale badges."""
     return await dm.running()
+
+
+# ---- UI defaults: persist the chip-view style/calibration to a tracked repo file so a good
+# pathfinding layout can be committed to git and shared (vs. per-browser localStorage) --------
+import json
+UICONF = DIST.parent.parent / "ui-defaults.json"   # ~/bhtop/ui-defaults.json (tracked)
+
+
+@app.get("/api/uiconfig")
+async def uiconfig_get():
+    try:
+        return json.loads(UICONF.read_text())
+    except Exception:
+        return {}
+
+
+@app.post("/api/uiconfig")
+async def uiconfig_set(cfg: dict):
+    UICONF.write_text(json.dumps(cfg, indent=2, sort_keys=True))
+    return {"ok": True, "path": str(UICONF)}
 
 
 @app.post("/api/tlab/file/duplicate")
@@ -403,6 +424,39 @@ async def l2_tele_zero(req: L2TileRequest):
 @app.post("/api/l2/poke")
 async def l2_poke(req: L2PokeRequest):
     return await dm.l2_poke(req.tile, req.addr, req.val)
+
+
+@app.post("/api/l2/cmd")
+async def l2_cmd(req: L2CommandRequest):
+    """Ring a hart's command mailbox (the 'keypress' — steer the virus, set seed, mutate)."""
+    return await dm.l2_cmd(req.tile, req.hart, req.op, req.arg0, req.arg1)
+
+
+@app.get("/api/l2/vec")
+async def l2_vec(tile: int, hart: int, ew: int = 32):
+    """Decode a hart's vector-register dump (v0..v31 + vector CSRs); needs bh_dump_vec()."""
+    return await dm.l2_vec(tile, hart, ew)
+
+
+@app.get("/api/l2/power")
+async def l2_power():
+    """Live board power / current / temperature (ARC telemetry)."""
+    return await dm.l2_power()
+
+
+@app.get("/api/l2/clocks")
+async def l2_clocks():
+    """Core (l2cpuclk) vs uncore (axiclk/arcclk) vs Tensix (aiclk) frequencies."""
+    return await dm.l2_clocks()
+
+
+@app.post("/api/l2/freq")
+async def l2_freq(req: L2FreqRequest):
+    """Set the L2CPU CORE PLL (verified points only; uncore is the transport, not settable)."""
+    try:
+        return await dm.l2_freq(req.mhz)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.get("/api/l2/docs")

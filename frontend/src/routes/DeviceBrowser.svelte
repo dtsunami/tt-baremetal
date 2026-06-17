@@ -81,7 +81,7 @@
   <svelte:fragment slot="right">
     {#if !active}
       <div class="empty">
-        <h3>Device hierarchy browser</h3>
+        <h3>RV Kernels — device hierarchy</h3>
         <p>Pick a source file on the left. The view switches to that engine:</p>
         <ul>
           <li><b class="noc">NOC</b> — data-movement kernels · footprint + telemetry</li>

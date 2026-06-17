@@ -12,13 +12,27 @@
 #       sw    t1, 0(t0)                # TELE[0] = hartid
 #   1:  j 1b
 
-    # ---- DRAM windows ----
+    # ---- DRAM windows (canonical map = regmap.py; the lab toolchain injects these via
+    #      -Wa,--defsym on every build, so they never drift. The .ifndef fallbacks below are
+    #      only for a standalone assemble; an injected --defsym value always wins.) ----
+    .ifndef BH_TRAMP_BASE
     .equ BH_TRAMP_BASE,  0x30000000    # RNMI redirect trampoline
-    .equ BH_CODE_BASE,   0x30001000    # your kernel loads + runs here
+    .endif
+    .ifndef BH_CODE_BASE
+    .equ BH_CODE_BASE,   0x30008000    # your kernel loads + runs here (above the data blocks)
+    .endif
+    .ifndef BH_TELE_BASE
     .equ BH_TELE_BASE,   0x30002000    # telemetry: hart 0's 64-slot window
+    .endif
+    .ifndef BH_TELE_STRIDE
     .equ BH_TELE_STRIDE, 0x100         # per-hart stride; hart N window = BASE + N*0x100
+    .endif
+    .ifndef BH_ARCH_BASE
     .equ BH_ARCH_BASE,   0x30003000    # arch-state dump: hart 0's register-file block
+    .endif
+    .ifndef BH_ARCH_STRIDE
     .equ BH_ARCH_STRIDE, 0x200         # per-hart stride; hart N block = BASE + N*0x200
+    .endif
 
     # ---- L2CPU peripheral registers (per-hart = base + N*stride) ----
     .equ BH_RESET_VEC,   0x20010000    # +N*8   hart N initial PC

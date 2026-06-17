@@ -76,14 +76,15 @@ equals the NoC offset 1:1. Three regions matter:
 
 ```
   0x20010000  ┌─────────────────────────────┐  PERIPHERAL registers (the hart knobs)
-              │ reset vectors, RNMI, status │  — how harts get booted/parked/seized (§4)
+              │ reset vectors, RNMI, status │  — boot/park/seize (§4); cmd mailbox @0x20010100
   0x20020000  └─────────────────────────────┘
                           ...
   0x30000000  ┌─────────────────────────────┐  DRAM (uncached off-chip GDDR)
-              │ 0x30000000  trampoline      │  ← installed by `bringup`
-              │ 0x30001000  YOUR CODE       │  ← `load` drops your kernel here, hart runs it
+              │ 0x30000000  trampoline      │  ← installed by `bringup` (+ park spin @0x30000020)
               │ 0x30002000  telemetry       │  ← you write, host reads (`tele`); per-hart
-              │ 0x30003000  arch-state      │  ← bh_dump_state() snapshots registers here
+              │ 0x30003000  arch-state      │  ← bh_dump_state() snapshots GPRs + CSRs here
+              │ 0x30005000  vector-state    │  ← bh_dump_vec() snapshots v0..v31 + vec CSRs
+              │ 0x30008000  YOUR CODE       │  ← `load` drops your kernel here, hart runs it
               └─────────────────────────────┘
 ```
 
@@ -139,8 +140,8 @@ The clever part. After `bringup`, every hart sits parked in a tiny spin loop, an
 
 ```
   host: bhtop-l2cpu load 0 0 mykernel.c
-    1. compile mykernel.c → flat image, drop it at 0x30001000 (DRAM: user code)
-    2. set RESET_VEC[hart] = 0x30001000
+    1. compile mykernel.c → flat image, drop it at 0x30008000 (DRAM: user code)
+    2. set RESET_VEC[hart] = 0x30008000
     3. write TRIGGER bit hart  ──fires a Resumable NMI──▶  hart jumps to the trampoline:
                                                             clear TRIGGER
                                                             set mnstatus.NMIE = 1   (re-arm)

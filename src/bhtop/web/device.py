@@ -619,6 +619,27 @@ class DeviceManager:
     async def l2_poke(self, tile, addr, val):
         return await self._run(lambda: (self._l2_get().poke(tile, addr, val), {"ok": True})[1])
 
+    async def l2_cmd(self, tile, hart, op, arg0=0, arg1=0):
+        """Ring hart N's mailbox doorbell (cooperative register/virus update). Returns the seq."""
+        return await self._run(
+            lambda: {"ok": True, "seq": self._l2_get().command(tile, hart, op, arg0, arg1)})
+
+    async def l2_vec(self, tile, hart, ew=32):
+        """Decode v0..v31 + vector CSRs (kernel must have called bh_dump_vec())."""
+        return await self._run(lambda: self._l2_get().vec_state(tile, hart, ew=ew))
+
+    async def l2_power(self):
+        """Board power/current/temperature via ARC telemetry."""
+        return await self._run(lambda: self._l2_get().power())
+
+    async def l2_clocks(self):
+        """Core (l2cpuclk) vs uncore (axiclk/arcclk) vs Tensix (aiclk) clocks."""
+        return await self._run(lambda: self._l2_get().clocks())
+
+    async def l2_freq(self, mhz):
+        """Set the L2CPU core PLL to a verified point (raises ValueError otherwise)."""
+        return await self._run(lambda: self._l2_get().set_core_freq(mhz))
+
     # ---- L2 workspace + docs + compile (filesystem/CPU — off the device thread) ----
     async def l2_files(self):
         return await asyncio.to_thread(l2lab.files)

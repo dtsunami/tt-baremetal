@@ -2,9 +2,6 @@
   import Router from 'svelte-spa-router'
   import Chip from './routes/Chip.svelte'
   import TileDetail from './routes/TileDetail.svelte'
-  import KernelLab from './routes/KernelLab.svelte'
-  import HartLab from './routes/HartLab.svelte'
-  import ComputeLab from './routes/ComputeLab.svelte'
   import DeviceBrowser from './routes/DeviceBrowser.svelte'
   import { connected, frame } from './lib/stores.js'
   import { fmtBW } from './lib/api.js'
@@ -12,10 +9,7 @@
   const routes = {
     '/': Chip,
     '/tile/:x/:y': TileDetail,
-    '/browser': DeviceBrowser,
-    '/kernel': KernelLab,
-    '/hart': HartLab,
-    '/compute': ComputeLab,
+    '/rv': DeviceBrowser,
   }
 
   $: mode = $frame?.mode ?? '—'
@@ -41,10 +35,7 @@
   <h1><a href="#/">bhtop</a> <span class="sub">Blackhole NoC explorer</span></h1>
   <nav>
     <a href="#/">chip</a>
-    <a href="#/browser">browser</a>
-    <a href="#/kernel">kernel lab</a>
-    <a href="#/hart">hart lab</a>
-    <a href="#/compute">compute lab</a>
+    <a href="#/rv">RV Kernels</a>
   </nav>
   <a class="mon" href="#/" title="live NoC bandwidth — click for the chip view">
     <span class="ml n0">NoC0</span>

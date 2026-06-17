@@ -36,14 +36,26 @@ class L2DeployRequest(BaseModel):
     hart: int                 # 0..3
     content: str              # kernel source (the editor buffer)
     lang: str = "c"           # c | asm | rust
-    addr: int = 0x30001000    # load address (default user-code window)
+    addr: int = 0x30008000    # load address (user-code window, above the data blocks)
     name: str = ""            # source filename, recorded so the UI shows what's on each hart
 
 
 class L2CompileRequest(BaseModel):
     content: str
     lang: str = "c"
-    addr: int = 0x30001000
+    addr: int = 0x30008000
+
+
+class L2CommandRequest(BaseModel):
+    tile: int
+    hart: int
+    op: int                   # see regmap.CMD_OPS (10=select_class, 11=set_seed, 12=mutate, …)
+    arg0: int = 0
+    arg1: int = 0
+
+
+class L2FreqRequest(BaseModel):
+    mhz: int                  # L2CPU core PLL target — only verified points (200, 1750) allowed
 
 
 class L2TileRequest(BaseModel):

@@ -20,12 +20,11 @@
 
 use core::ptr::{read_volatile, write_volatile};
 
-// ---- DRAM windows (see regmap.REGIONS) ----
-pub const BH_TRAMP_BASE: usize = 0x3000_0000;
-pub const BH_CODE_BASE: usize = 0x3000_1000;
-pub const BH_TELE_BASE: usize = 0x3000_2000; // hart 0's window
-pub const BH_TELE_STRIDE: usize = 0x100; // per-hart window stride
-pub const BH_TELE_SLOTS: usize = 64;
+// ---- memory map (canonical = regmap.py): the lab toolchain writes a bh_map.rs of `pub const`s
+// (BH_TRAMP_BASE/BH_CODE_BASE/BH_TELE_*/BH_ARCH_*/BH_CMD_*/BH_VARCH_*) into the build dir and
+// points BH_MAP at it, so Rust kernels stay in lockstep with the map — same single source as the
+// C -D / asm --defsym injection, nothing to hand-sync. ----
+include!(concat!(env!("BH_MAP")));
 
 // ---- generic memory-mapped access (just poke an address) ----
 #[inline]
@@ -77,9 +76,8 @@ pub unsafe fn bh_perf() {
 }
 
 // ---- arch-state dump: snapshot all 32 GPRs + key CSRs to this hart's DRAM block
-// (0x30003000 + hartid*0x200) so the host's "Arch" tab can show the register file. ----
-pub const BH_ARCH_BASE: usize = 0x3000_3000;
-pub const BH_ARCH_STRIDE: usize = 0x200;
+// (BH_ARCH_BASE + hartid*BH_ARCH_STRIDE, from the included map) so the host's "Arch" tab can
+// show the register file. ----
 extern "C" { pub fn bh_dump_state(); }
 core::arch::global_asm!(r#"
 .globl bh_dump_state

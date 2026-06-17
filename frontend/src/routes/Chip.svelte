@@ -1,40 +1,80 @@
 <script>
-  import { push } from 'svelte-spa-router'
   import { floorplan, frame } from '../lib/stores.js'
   import { fmtBW, tileKey, getJSON, postJSON } from '../lib/api.js'
+  import TilePane from '../lib/TilePane.svelte'
+  import TileCartoon from '../lib/TileCartoon.svelte'
 
-  const NOC0 = '#cf83ff' // purple — routes east + south (+ wrap)
-  const NOC1 = '#36ecff' // cyan   — routes west + north (+ wrap)
-  const CELL = 54, PAD = 32
+  // NoC rail colours are reactive — driven by the style config (cfg) below
+
+  // tile-type glyphs (item 6) — mirrors floorplan.KINDS; DRAM shows its controller (D0…D7)
+  const GLYPH = { tensix: 'T', dram: 'D', eth: 'E', arc: 'A', pcie: 'P', l2cpu: 'C', security: 'S', empty: '·' }
+  const glyphOf = (t) => t.kind === 'dram' && t.dram_ctrl != null ? `D${t.dram_ctrl}` : (GLYPH[t.kind] || '?')
+  const KIND_NAME = { tensix: 'Tensix', dram: 'DRAM', eth: 'Ethernet', l2cpu: 'L2CPU x280', arc: 'ARC', pcie: 'PCIe', security: 'Security', empty: 'router·NIU' }
+  const KIND_ORDER = ['tensix', 'l2cpu', 'dram', 'eth', 'pcie', 'arc', 'security', 'empty']
 
   let svgEl
   let scale = 1, tx = 0, ty = 0
   let hovered = null, hx = 0, hy = 0
   let dragging = false, lastX = 0, lastY = 0, moved = false
 
-  // 'card' = photo + accurate routing registered to the die; 'topo' = clean noc0 torus grid
-  let layout = localStorage.getItem('bhtop_layout') || 'card'
-  let noc = +(localStorage.getItem('bhtop_noc') ?? 0) // 0 = NoC0 only, 1 = NoC1 only, 2 = both
   let align = false
-  let box = null // [x0,y0,x1,y1] live calibration of the package footprint (card layout)
+  let box = null // [x0,y0,x1,y1] live calibration of the package footprint
+  let selected = null            // tile shown in the right-hand pane (item 3)
+  let dramEdit = false           // drag GDDR6 chip badges to place them on the photo (item 7)
+  let dramPos = null             // [[x,y],…] image-coord centres, one per controller
+  let chipDrag = null
+  let hidden = new Set(JSON.parse(localStorage.getItem('bhtop_hidden') || '[]'))  // tile kinds to hide
+  let dramSize = JSON.parse(localStorage.getItem('bhtop_dram_size3') || 'null') || [150, 54]  // badge [w,h] — wide + short
+  $: if (dramSize) localStorage.setItem('bhtop_dram_size3', JSON.stringify(dramSize))
+  // ---- per-element style: colours, opacity, per-NoC wrap returns (H+V), NIU markers — each
+  //      tuned via a ⚙ on its legend chip; persisted per-browser + savable to the repo (git) ----
+  const hexToRgb = (h) => { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255] }
+  const dmerge = (b, o) => { const r = Array.isArray(b) ? [...b] : { ...b }; for (const k in (o || {})) r[k] = (o[k] && typeof o[k] === 'object' && !Array.isArray(o[k])) ? dmerge(b[k] || {}, o[k]) : o[k]; return r }
+  const RET = () => ({ s: 26, w: 14, a: 0 })                 // wrap-return hook: stretch / width / angle°
+  const ELNAME = { noc0: 'NoC0', noc1: 'NoC1', niu0: 'NIU0', niu1: 'NIU1', tensix: 'Tensix', dram: 'DRAM', eth: 'Ethernet', l2cpu: 'L2CPU', pcie: 'PCIe', arc: 'ARC', security: 'Security' }
+  const DEF_CFG = {
+    noc0: { color: '#cf83ff', op: 1, show: true, h: RET(), v: RET() }, noc1: { color: '#36ecff', op: 1, show: false, h: RET(), v: RET() },
+    niu0: { color: '#cf83ff', op: 0.85, show: false }, niu1: { color: '#36ecff', op: 0.85, show: false },
+    tensix: { color: '#ff9f38', op: 1 }, eth: { color: '#38d2f0', op: 1 }, l2cpu: { color: '#c884ff', op: 1 },
+    pcie: { color: '#6398ff', op: 1 }, arc: { color: '#ff6060', op: 1 }, security: { color: '#f6d344', op: 1 },
+    dram: { op: 1, ch: ['#34e082', '#38dcf0', '#6398ff', '#b482ff', '#f078dc', '#ff6e6e', '#ffae3c', '#dede5c'] },
+  }
+  let cfg = dmerge(DEF_CFG, JSON.parse(localStorage.getItem('bhtop_cfg') || '{}'))
+  $: localStorage.setItem('bhtop_cfg', JSON.stringify(cfg))
+  let styleEl = null                                          // which element's ⚙ popover is open
+  let saveMsg = ''
+  $: NOC0 = cfg.noc0.color
+  $: NOC1 = cfg.noc1.color
+
+  // save the chip-view style/placement to a tracked repo file (git), or pull it back
+  async function saveDefaults() {
+    try { await postJSON('/api/uiconfig', { cfg, box, dramPos, dramSize }); saveMsg = 'saved → ui-defaults.json (git) ✓' }
+    catch (e) { saveMsg = 'save failed: ' + e }
+    setTimeout(() => (saveMsg = ''), 4000)
+  }
+  async function loadDefaults() {
+    try {
+      const d = await getJSON('/api/uiconfig')
+      if (d.cfg) cfg = dmerge(DEF_CFG, d.cfg)
+      if (d.box) box = d.box
+      if (d.dramPos) dramPos = d.dramPos
+      if (d.dramSize) dramSize = d.dramSize
+      saveMsg = 'loaded server defaults'
+    } catch (e) { saveMsg = 'load failed: ' + e }
+    setTimeout(() => (saveMsg = ''), 4000)
+  }
 
   $: fp = $floorplan
   $: img = fp?.image
-  $: cols = fp?.noc0_dims[0] ?? 17
-  $: rows = fp?.noc0_dims[1] ?? 12
   $: ftiles = $frame?.tiles ?? {}
-  $: maxBW = kf
-    ? Math.max(1, ...Object.values(kf['0'] ?? {}), ...Object.values(kf['1'] ?? {}))
-    : Math.max(1, ...Object.values(ftiles).map((t) => (t.noc0 || 0) + (t.noc1 || 0)))
+  $: maxBW = Math.max(1, ...Object.values(ftiles).map((t) => (t.noc0 || 0) + (t.noc1 || 0)))
 
   $: if (fp && box === null) box = JSON.parse(localStorage.getItem('bhtop_cal') || 'null') || [...img.package]
   $: if (box) localStorage.setItem('bhtop_cal', JSON.stringify(box))
-  $: localStorage.setItem('bhtop_layout', layout)
-  $: localStorage.setItem('bhtop_noc', noc)
 
   $: lod = scale >= 4.5 ? 'high' : scale >= 2 ? 'mid' : 'low'
   $: sw = 1 / scale
-  $: view = layout === 'topo' || !img ? { w: PAD * 2 + cols * CELL, h: PAD * 2 + rows * CELL } : { w: img.w, h: img.h }
+  $: view = img ? { w: img.w, h: img.h } : { w: 1, h: 1 }
 
   // remap a server rect (computed for the default box) to the live-adjusted box — pure affine
   function remap(r) {
@@ -42,11 +82,7 @@
     const sx = (B[2] - B[0]) / (D[2] - D[0]), sy = (B[3] - B[1]) / (D[3] - D[1])
     return { x: B[0] + (r.x - D[0]) * sx, y: B[1] + (r.y - D[1]) * sy, w: r.w * sx, h: r.h * sy }
   }
-  function pos(t) {
-    if (layout === 'topo')
-      return { x: PAD + t.noc0[0] * CELL + CELL * 0.12, y: PAD + t.noc0[1] * CELL + CELL * 0.12, w: CELL * 0.76, h: CELL * 0.76 }
-    return remap(t.rect)
-  }
+  const pos = (t) => remap(t.rect)
 
   // accurate routing = noc0 grid adjacency with torus wrap (NOT physical neighbours)
   let adj = []
@@ -64,52 +100,82 @@
     }
     return out
   }
-  // straight for interior links; bowed arc for torus WRAP links (so wraparound reads)
-  function railPath(xa, ya, xb, yb, wrap) {
-    if (!wrap) return `M${xa},${ya} L${xb},${yb}`
-    const mx = (xa + xb) / 2, my = (ya + yb) / 2
-    const ux = xb - xa, uy = yb - ya, L = Math.hypot(ux, uy) || 1
-    const px = -uy / L, py = ux / L, bow = Math.max(L * 0.33, Math.min(view.w, view.h) * 0.04)
-    return `M${xa},${ya} Q${mx + px * bow},${my + py * bow} ${xb},${yb}`
+  // a torus WRAP renders as a compact 180° hook at the edge: it exits in the flow direction,
+  // turns, and ends pointing the OPPOSITE way (so a full-width/height wrap doesn't balloon
+  // off-screen the way a single connecting arc did). fx,fy = forward (flow) unit vector.
+  function hook(px, py, fx, fy, reach, sep, angDeg) {
+    const a = (angDeg || 0) * Math.PI / 180, ca = Math.cos(a), sa = Math.sin(a)
+    const rfx = fx * ca - fy * sa, rfy = fx * sa + fy * ca, nx = -rfy, ny = rfx   // rotated forward + perp
+    return `M${px},${py} C${px + rfx * reach},${py + rfy * reach} ${px + rfx * reach + nx * sep},${py + rfy * reach + ny * sep} ${px + nx * sep},${py + ny * sep}`
   }
-  // rail geometry (recomputes on layout/calibration change, not per frame)
+  // rail geometry (recomputes on calibration change, not per frame)
   $: rails = box
     ? adj.map((l) => {
         const ca = pos(l.a), cb = pos(l.b)
         const ax = ca.x + ca.w / 2, ay = ca.y + ca.h / 2, bx = cb.x + cb.w / 2, by = cb.y + cb.h / 2
+        if (l.wrap) {
+          const horiz = l.a.noc0[1] === l.b.noc0[1]        // horizontal wrap → east; vertical → south
+          const fx = horiz ? 1 : 0, fy = horiz ? 0 : 1
+          const r0 = horiz ? cfg.noc0.h : cfg.noc0.v, r1 = horiz ? cfg.noc1.h : cfg.noc1.v
+          return { l, d0: hook(ax, ay, fx, fy, r0.s, r0.w, r0.a), d1: hook(bx, by, -fx, -fy, r1.s, r1.w, r1.a) }
+        }
         const ux = bx - ax, uy = by - ay, L = Math.hypot(ux, uy) || 1
         const px = -uy / L, py = ux / L, o = Math.min(ca.w, ca.h) * 0.18
         return {
           l,
-          d0: railPath(ax + px * o, ay + py * o, bx + px * o, by + py * o, l.wrap), // NoC0 a→b
-          d1: railPath(bx - px * o, by - py * o, ax - px * o, ay - py * o, l.wrap), // NoC1 b→a
+          d0: `M${ax + px * o},${ay + py * o} L${bx + px * o},${by + py * o}`, // NoC0 a→b
+          d1: `M${bx - px * o},${by - py * o} L${ax - px * o},${ay - py * o}`, // NoC1 b→a
         }
       })
     : []
 
-  // kernel footprint overlay: when present, the whole view (fills, rails, labels)
-  // shows the kernel's per-NoC bytes instead of live bandwidth
-  let kernelResult = null
-  $: kf = kernelResult?.foot ?? null
-  function bw(t, noc) {
-    if (kf) return kf[String(noc)]?.[tileKey(t.noc0)] || 0
-    const f = ftiles[tileKey(t.noc0)]
-    return f ? (noc === 0 ? f.noc0 : f.noc1) || 0 : 0
-  }
-  function fmtAmt(v) { return kf ? (v >= 1e9 ? (v / 1e9).toFixed(2) + ' GB' : (v / 1e6).toFixed(1) + ' MB') + ' moved' : fmtBW(v) }
-  function linkAct(r, noc) { return Math.max(bw(r.l.a, noc), bw(r.l.b, noc)) / maxBW }
+  function bw(t, n) { const f = ftiles[tileKey(t.noc0)]; return f ? (n === 0 ? f.noc0 : f.noc1) || 0 : 0 }
+  function linkAct(r, n) { return Math.max(bw(r.l.a, n), bw(r.l.b, n)) / maxBW }
   function safe(t) { return fp.safe_kinds.includes(t.kind) }
-  function outline(t) { const c = fp.kind_rgb[t.kind] || [120, 120, 140]; return `rgb(${c[0]},${c[1]},${c[2]})` }
-  // glow only the selected NoC's NIU (purple=NoC0, cyan=NoC1) so one network reads at a time
-  function fill(t) {
-    const a0 = noc === 1 ? 0 : bw(t, 0) / maxBW
-    const a1 = noc === 0 ? 0 : bw(t, 1) / maxBW
-    const r = 18 + 180 * a0 + 60 * a1, g = 20 + 120 * a0 + 214 * a1, b = 28 + 255 * a0 + 224 * a1
-    return `rgb(${Math.min(255, r) | 0},${Math.min(255, g) | 0},${Math.min(255, b) | 0})`
+  function selBW(t) { const s0 = cfg.noc0.show, s1 = cfg.noc1.show; return s0 && !s1 ? bw(t, 0) : s1 && !s0 ? bw(t, 1) : bw(t, 0) + bw(t, 1) }
+  // NIU "stop" number per tile, in noc0 raster order (N1, N2, …)
+  $: niuIdx = (() => {
+    const m = {}
+    if (fp) fp.tiles.filter((t) => t.kind !== 'empty').sort((a, b) => a.noc0[1] - b.noc0[1] || a.noc0[0] - b.noc0[0]).forEach((t, i) => m[tileKey(t.noc0)] = i + 1)
+    return m
+  })()
+  // DRAM channel colour (per controller) + per-element opacity, both from cfg
+  const dramColor = (ctrl, c) => c.dram.ch[ctrl % 8]
+  const kindOp = (t, c) => (t.kind === 'dram' ? c.dram.op : (c[t.kind]?.op ?? 1))
+  const kindSwatch = (k, c) => k === 'dram' ? c.dram.ch[0] : (c[k]?.color || `rgb(${(fp.kind_rgb[k] || [120, 120, 140]).join(',')})`)
+  // tile label colour = its configured kind colour (DRAM by channel), going white-hot when busy
+  function labelFill(t, c) {
+    const hex = t.kind === 'dram' && t.dram_ctrl != null ? c.dram.ch[t.dram_ctrl % 8] : (c[t.kind]?.color || '#e2e6ee')
+    const rgb = hexToRgb(hex)
+    if (!safe(t)) return `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`
+    const a = Math.min(1, (selBW(t) / maxBW) * 1.5)
+    const m = (i) => Math.min(255, rgb[i] + (255 - rgb[i]) * a) | 0
+    return `rgb(${m(0)},${m(1)},${m(2)})`
   }
-  function selBW(t) { return noc === 0 ? bw(t, 0) : noc === 1 ? bw(t, 1) : bw(t, 0) + bw(t, 1) }
-  function fillOp(t) { return safe(t) ? 0.4 + 0.5 * (selBW(t) / maxBW) : 0.32 }
-  function mb(v) { return v >= 1e6 ? (v / 1e6).toFixed(0) : v >= 1e3 ? (v / 1e3).toFixed(0) + 'k' : '0' }
+  // labels are the resting identity; they fade out as you ZOOM in (reveal the photo + rails)
+  $: labelOp = scale <= 1.6 ? 1 : Math.max(0, 1 - (scale - 1.6) / 3.2)
+  // …and past ~6× the detailed per-tile cartoon fades IN (only the tiles currently in view)
+  $: cartoonOp = scale < 6 ? 0 : Math.min(1, (scale - 6) / 3)
+  $: visibleTiles = (cartoonOp > 0 && fp && box) ? fp.tiles.filter((t) => {
+    if (hidden.has(t.kind) || t.kind === 'empty') return false
+    const p = pos(t)
+    return p.x + p.w > -tx / scale && p.x < (view.w - tx) / scale && p.y + p.h > -ty / scale && p.y < (view.h - ty) / scale
+  }) : []
+  // per-tile short id: tensix = 00,01,…; others = glyph + index (D0/E0/C0/A0/…)
+  $: tileLabel = (() => {
+    const m = {}, ctr = {}
+    if (fp) for (const t of fp.tiles) {
+      if (t.kind === 'empty') { m[tileKey(t.noc0)] = ''; continue }
+      const i = (ctr[t.kind] = (ctr[t.kind] ?? -1) + 1)
+      m[tileKey(t.noc0)] = t.kind === 'tensix' ? String(i).padStart(2, '0')
+        : t.kind === 'dram' ? 'd' + t.dram_ctrl          // name by controller, matching the chip badges
+        : (GLYPH[t.kind] || '?') + i
+    }
+    return m
+  })()
+  $: kinds = fp ? KIND_ORDER.filter((k) => fp.tiles.some((t) => t.kind === k)) : []
+  $: kindCount = fp ? fp.tiles.reduce((m, t) => ((m[t.kind] = (m[t.kind] || 0) + 1), m), {}) : {}
+  function toggleKind(k) { hidden.has(k) ? hidden.delete(k) : hidden.add(k); hidden = hidden; localStorage.setItem('bhtop_hidden', JSON.stringify([...hidden])) }
 
   // ---- zoom / pan ----
   function clamp() {
@@ -124,7 +190,10 @@
     const ns = Math.min(16, Math.max(1, scale * (e.deltaY < 0 ? 1.18 : 1 / 1.18)))
     tx = px - (px - tx) * (ns / scale); ty = py - (py - ty) * (ns / scale); scale = ns; clamp()
   }
-  function onDown(e) { dragging = true; moved = false; lastX = e.clientX; lastY = e.clientY }
+  function onDown(e) {
+    if (dramEdit && e.target.closest?.('.dchip')) return   // let a chip badge own the drag
+    dragging = true; moved = false; lastX = e.clientX; lastY = e.clientY
+  }
   function onMove(e) {
     const r = svgEl.getBoundingClientRect()
     hx = e.clientX - r.left; hy = e.clientY - r.top
@@ -135,66 +204,11 @@
   }
   function onUp() { dragging = false }
   function reset() { scale = 1; tx = 0; ty = 0 }
-  function open(t) {
-    if (moved) return
-    if (pickMode) { if (t.kind === 'tensix') { injSrc = [...t.noc0]; pickMode = false } return }
-    push(`/tile/${t.noc0[0]}/${t.noc0[1]}`)
-  }
-  function setLayout(l) { layout = l; reset() }
+  function open(t) { if (!moved) selected = t }   // item 3: right-hand tile pane
 
-  // ---- injection ----
-  let injectOpen = false, pickMode = false
-  let injSrc = null            // [x,y] noc0 source tensix
-  let patterns = []
-  let pattern = 'gddr6_write'
-  let lengthMB = 0.25, fires = 3, stream = true
-  let injBusy = false, injErr = null, injResult = null
-  getJSON('/api/inject/patterns').then((p) => (patterns = p)).catch(() => {})
-  $: streaming = $frame?.inject?.streaming
-  $: srcTile = injSrc && fp ? fp.tiles.find((t) => t.noc0[0] === injSrc[0] && t.noc0[1] === injSrc[1]) : null
-
-  async function fire() {
-    if (!injSrc) { injErr = 'pick a source tensix tile first'; return }
-    injBusy = true; injErr = null
-    try {
-      const r = await postJSON('/api/inject', { src: injSrc, pattern, length: Math.round(lengthMB * 1048576), fires, stream })
-      injResult = r.ok ? r : null
-      if (!r.ok) injErr = r.error || 'inject failed'
-    } catch (e) { injErr = e.message } finally { injBusy = false }
-  }
-  async function stopInject() {
-    injBusy = true
-    try { await postJSON('/api/inject/stop'); injResult = null } catch (e) { injErr = e.message } finally { injBusy = false }
-  }
-
-  // ---- tt-metal kernels ----
-  let kernelsOpen = false, kFilter = ''
-  let kInfo = null            // {available, tests}
-  let kRunning = null, kErr = null
-  $: if (kernelsOpen && !kInfo) getJSON('/api/kernels').then((k) => (kInfo = k)).catch((e) => (kErr = e.message))
-  $: kTests = kInfo?.tests?.filter((t) => t.toLowerCase().includes(kFilter.toLowerCase())) ?? []
-
-  async function runKernel(name) {
-    kRunning = name; kErr = null; kernelResult = null
-    try {
-      const r = await postJSON('/api/kernels/run', { name })
-      if (!r.ok) { kErr = r.error || 'run failed'; kRunning = null; return }
-      // job is async server-side (first-run JIT can take minutes) — poll for the result
-      while (true) {
-        await new Promise((res) => setTimeout(res, 3000))
-        const s = await getJSON('/api/kernels/last')
-        if (!s.running && s.result?.name === name) {
-          if (s.result.ok) kernelResult = s.result
-          else kErr = s.result.error || 'run failed'
-          break
-        }
-      }
-    } catch (e) { kErr = e.message } finally { kRunning = null }
-  }
-
-  // ---- calibration (card layout) ----
+  // ---- calibration ----
   function onKey(e) {
-    if (!align || layout !== 'card' || !box) return
+    if (!align || !box) return
     const s = e.shiftKey ? 10 : 2, b = [...box]
     if (e.key === 'ArrowLeft') { b[0] -= s; b[2] -= s }
     else if (e.key === 'ArrowRight') { b[0] += s; b[2] += s }
@@ -211,9 +225,86 @@
 
   // ---- DRAM dashboard + PCIe ----
   $: dramInfo = fp?.dram          // {ctrls, per_ctrl_gib, total_gib}
-  $: pcieInfo = fp?.pcie          // {link, gbps_per_dir}
   $: dramBW = $frame?.dram ?? {}  // {ctrl: {r, w}} bytes/s
   $: dramMax = Math.max(2e6, ...Object.values(dramBW).flatMap((d) => [d.r || 0, d.w || 0]))
+
+  // ---- DRAM chip overlay on the board photo (item 7: guessed positions, drag to adjust) ----
+  function defaultDramPos(b, n) {
+    const w = b[2] - b[0], h = b[3] - b[1], mx = w * 0.15
+    const fr = [0.13, 0.37, 0.63, 0.87], half = Math.ceil(n / 2), out = []
+    for (let i = 0; i < n; i++) {
+      const right = i >= half
+      out.push([right ? b[2] + mx : b[0] - mx, b[1] + h * fr[(right ? i - half : i) % fr.length]])
+    }
+    return out   // guess: half the controllers flank the package left, half right
+  }
+  $: if (dramInfo && box && dramPos === null) {
+    const saved = JSON.parse(localStorage.getItem('bhtop_dram_pos') || 'null')
+    dramPos = (saved && saved.length === dramInfo.ctrls.length) ? saved : defaultDramPos(box, dramInfo.ctrls.length)
+  }
+  function startChip(e, i) {
+    if (!dramEdit) return
+    e.preventDefault(); e.stopPropagation()
+    const r = svgEl.getBoundingClientRect()
+    chipDrag = { i, x0: e.clientX, y0: e.clientY, px: dramPos[i][0], py: dramPos[i][1], rw: r.width, rh: r.height }
+    window.addEventListener('mousemove', moveChip); window.addEventListener('mouseup', endChip)
+  }
+  function moveChip(e) {
+    if (!chipDrag) return
+    const dx = ((e.clientX - chipDrag.x0) / chipDrag.rw) * view.w / scale
+    const dy = ((e.clientY - chipDrag.y0) / chipDrag.rh) * view.h / scale
+    dramPos[chipDrag.i] = [chipDrag.px + dx, chipDrag.py + dy]; dramPos = dramPos
+  }
+  function endChip() {
+    chipDrag = null
+    window.removeEventListener('mousemove', moveChip); window.removeEventListener('mouseup', endChip)
+    localStorage.setItem('bhtop_dram_pos', JSON.stringify(dramPos))
+  }
+  function resetDram() { dramPos = defaultDramPos(box, dramInfo.ctrls.length); localStorage.setItem('bhtop_dram_pos', JSON.stringify(dramPos)) }
+
+  // centre die node of each DRAM channel (centroid of its tiles) — for the channel→chip connector
+  $: dramCenters = (() => {
+    if (!fp || !box) return {}
+    const g = {}, ctr = {}
+    for (const t of fp.tiles) if (t.kind === 'dram' && t.dram_ctrl != null) (g[t.dram_ctrl] = g[t.dram_ctrl] || []).push(pos(t))
+    for (const k in g) { const a = g[k]; ctr[k] = [a.reduce((s, p) => s + p.x + p.w / 2, 0) / a.length, a.reduce((s, p) => s + p.y + p.h / 2, 0) / a.length] }
+    return ctr
+  })()
+
+  // ---- click-to-trace: highlight the selected tile's NoC neighbour links + its noc0 route to DRAM ----
+  const sameTile = (a, b) => a.noc0[0] === b.noc0[0] && a.noc0[1] === b.noc0[1]
+  $: railByKey = (() => { const m = {}; for (const r of rails) m[`${r.l.a.noc0[0]},${r.l.a.noc0[1]}>${r.l.b.noc0[0]},${r.l.b.noc0[1]}`] = r; return m })()
+  function nearestDram(t) {
+    const [c, r] = fp.noc0_dims
+    let best = null, bd = 1e9
+    for (const d of fp.tiles) {
+      if (d.kind !== 'dram') continue
+      const dist = ((d.noc0[0] - t.noc0[0] + c) % c) + ((d.noc0[1] - t.noc0[1] + r) % r)   // noc0 route len (E+S)
+      if (dist < bd) { bd = dist; best = d }
+    }
+    return best
+  }
+  function routeLinks(src, dst) {
+    const [c, r] = fp.noc0_dims, out = []
+    let x = src.noc0[0], y = src.noc0[1], g = 0
+    while (x !== dst.noc0[0] && g++ < c) { const k = railByKey[`${x},${y}>${(x + 1) % c},${y}`]; if (k) out.push(k); x = (x + 1) % c }
+    g = 0
+    while (y !== dst.noc0[1] && g++ < r) { const k = railByKey[`${x},${y}>${x},${(y + 1) % r}`]; if (k) out.push(k); y = (y + 1) % r }
+    return out
+  }
+  // highlight path: straight for interior links; a 180° hairpin for torus WRAP links so the
+  // flow leaves + re-enters going the SAME direction (reads as a wraparound, not a back-track)
+  function hiPath(r, cfg) {
+    const ca = pos(r.l.a), cb = pos(r.l.b)
+    const ax = ca.x + ca.w / 2, ay = ca.y + ca.h / 2, bx = cb.x + cb.w / 2, by = cb.y + cb.h / 2
+    if (!r.l.wrap) return `M${ax},${ay} L${bx},${by}`
+    const horiz = r.l.a.noc0[1] === r.l.b.noc0[1], fx = horiz ? 1 : 0, fy = horiz ? 0 : 1
+    const ret = horiz ? cfg.noc0.h : cfg.noc0.v              // highlight traces noc0
+    return hook(ax, ay, fx, fy, ret.s, ret.w, ret.a)
+  }
+  $: selLinks = (selected && rails.length) ? rails.filter((r) => sameTile(r.l.a, selected) || sameTile(r.l.b, selected)) : []
+  $: dramTarget = (selected && fp && selected.kind !== 'dram') ? nearestDram(selected) : null
+  $: dramRoute = (selected && dramTarget && railByKey) ? routeLinks(selected, dramTarget) : []
 </script>
 
 <svelte:window on:keydown={onKey} />
@@ -232,82 +323,117 @@
           <feGaussianBlur stdDeviation={0.9 / scale} result="b" />
           <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
         </filter>
+        <!-- bold direction arrows for the click-to-trace highlight -->
+        <marker id="hia" markerWidth="11" markerHeight="11" refX="7" refY="5.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L11,5.5 L0,11 z" fill="#ffd24a" stroke="#000" stroke-width="0.7" /></marker>
+        <marker id="hiw" markerWidth="11" markerHeight="11" refX="7" refY="5.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L11,5.5 L0,11 z" fill="#fff" stroke="#000" stroke-width="0.7" /></marker>
       </defs>
 
       <g transform="translate({tx} {ty}) scale({scale})">
-        {#if layout === 'card'}
-          <image href={img.src} x="0" y="0" width={img.w} height={img.h} />
-          <rect x={box[0]} y={box[1]} width={box[2] - box[0]} height={box[3] - box[1]}
-            fill="none" stroke={align ? '#ffcc44' : '#ffffff33'} stroke-width={sw * (align ? 1.6 : 1)} stroke-dasharray={align ? sw * 4 : 0} />
-        {:else}
-          <rect x="0" y="0" width={view.w} height={view.h} fill="#0a0c10" />
-        {/if}
+        <image href={img.src} x="0" y="0" width={img.w} height={img.h} />
+        <rect x={box[0]} y={box[1]} width={box[2] - box[0]} height={box[3] - box[1]}
+          fill="none" stroke={align ? '#ffcc44' : '#ffffff22'} stroke-width={sw * (align ? 1.6 : 1)} stroke-dasharray={align ? sw * 4 : 0} />
 
-        <!-- accurate routing rails: NoC0 purple (a→b, E/S), NoC1 cyan (b→a, W/N); wraps dashed in topo.
-             single-NoC selection shows rails at any zoom so the interleave + wrap read clearly -->
-        {#if noc !== 2 || lod !== 'low' || layout === 'topo'}
+        <!-- accurate routing rails: NoC0 purple (a→b, E/S), NoC1 cyan (b→a, W/N).
+             item 5: high-contrast — dark halo + bright core, strong base opacity so the network
+             always reads over the board photo; activity adds width + opacity on top -->
+        {#if cfg.noc0.show || cfg.noc1.show}
+          <g opacity={selected ? 0.18 : 1}>
           {#each rails as r}
-            {#if noc !== 1}
+            {#if cfg.noc0.show}
               {@const a = linkAct(r, 0)}
-              <path d={r.d0} fill="none" stroke="#05060a" stroke-width={sw * (4 + 3.5 * a)} stroke-opacity="0.75" stroke-linecap="round" stroke-dasharray={r.l.wrap ? sw * 5 : 0} />
-              <path d={r.d0} fill="none" stroke={NOC0} stroke-width={sw * (2.4 + 3.5 * a)} stroke-linecap="round" marker-end="url(#a0)" stroke-dasharray={r.l.wrap ? sw * 5 : 0} opacity={(r.l.wrap ? 0.6 : 0.48) + 0.52 * a} />
+              <path d={r.d0} fill="none" stroke="#000" stroke-width={sw * (6 + 4 * a)} stroke-opacity="0.85" stroke-linecap="round" stroke-dasharray={r.l.wrap ? sw * 5 : 0} />
+              <path d={r.d0} fill="none" stroke={NOC0} stroke-width={sw * (3.2 + 4 * a)} stroke-linecap="round" marker-end="url(#a0)" stroke-dasharray={r.l.wrap ? sw * 5 : 0} opacity={((r.l.wrap ? 0.8 : 0.74) + 0.26 * a) * cfg.noc0.op} filter={a > 0.04 ? 'url(#glow)' : null} />
             {/if}
-            {#if noc !== 0}
+            {#if cfg.noc1.show}
               {@const a = linkAct(r, 1)}
-              <path d={r.d1} fill="none" stroke="#05060a" stroke-width={sw * (4 + 3.5 * a)} stroke-opacity="0.75" stroke-linecap="round" stroke-dasharray={r.l.wrap ? sw * 5 : 0} />
-              <path d={r.d1} fill="none" stroke={NOC1} stroke-width={sw * (2.4 + 3.5 * a)} stroke-linecap="round" marker-end="url(#a1)" stroke-dasharray={r.l.wrap ? sw * 5 : 0} opacity={(r.l.wrap ? 0.6 : 0.48) + 0.52 * a} />
+              <path d={r.d1} fill="none" stroke="#000" stroke-width={sw * (6 + 4 * a)} stroke-opacity="0.85" stroke-linecap="round" stroke-dasharray={r.l.wrap ? sw * 5 : 0} />
+              <path d={r.d1} fill="none" stroke={NOC1} stroke-width={sw * (3.2 + 4 * a)} stroke-linecap="round" marker-end="url(#a1)" stroke-dasharray={r.l.wrap ? sw * 5 : 0} opacity={((r.l.wrap ? 0.8 : 0.74) + 0.26 * a) * cfg.noc1.op} filter={a > 0.04 ? 'url(#glow)' : null} />
             {/if}
           {/each}
+          </g>
         {/if}
 
+        <!-- click-to-trace: the selected tile's NoC neighbour links + its noc0 route to DRAM.
+             Shows even when the overlay is off; hidden once you zoom into the cartoons. -->
+        {#if selected && cartoonOp < 0.8}
+          <!-- neighbour links: black halo + bright white core + noc0 direction arrow -->
+          {#each selLinks as r}
+            <path d={hiPath(r, cfg)} fill="none" stroke="#000" stroke-width={sw * 7} stroke-opacity="0.92" stroke-linecap="round" />
+            <path d={hiPath(r, cfg)} fill="none" stroke="#ffffff" stroke-width={sw * 3.6} stroke-linecap="round" marker-end="url(#hiw)" />
+          {/each}
+          <!-- route to DRAM: black halo + bright amber + glow + a bold arrow INTO the target -->
+          {#each dramRoute as r, i}
+            <path d={hiPath(r, cfg)} fill="none" stroke="#000" stroke-width={sw * 8} stroke-opacity="0.92" stroke-linecap="round" />
+            <path d={hiPath(r, cfg)} fill="none" stroke="#ffd24a" stroke-width={sw * 4.2} stroke-linecap="round" filter="url(#glow)" marker-end={i === dramRoute.length - 1 ? 'url(#hia)' : null} />
+          {/each}
+          <rect x={pos(selected).x} y={pos(selected).y} width={pos(selected).w} height={pos(selected).h} rx={Math.min(pos(selected).w, pos(selected).h) * 0.16} fill="none" stroke="#ffffff" stroke-width={sw * 3} />
+          {#if dramTarget}
+            <rect x={pos(dramTarget).x} y={pos(dramTarget).y} width={pos(dramTarget).w} height={pos(dramTarget).h} rx={Math.min(pos(dramTarget).w, pos(dramTarget).h) * 0.16} fill="none" stroke="#ffd24a" stroke-width={sw * 3} filter="url(#glow)" />
+          {/if}
+        {/if}
+
+        <!-- tiles as fading labels — D#/E#/C#/… and tensix 00,01… — over a transparent hit-area
+             for hover + click. Labels are the resting view and fade out as you ZOOM in. -->
         {#each fp.tiles as t (tileKey(t.noc0))}
-          {@const p = pos(t)}
-          {#if t.kind === 'empty'}
-            <!-- empty coordinate: router + NIU only (torus passthrough, per tt-isa-doc) -->
-            <rect x={p.x + p.w * 0.28} y={p.y + p.h * 0.28} width={p.w * 0.44} height={p.h * 0.44}
-              rx={p.w * 0.1} fill="#10131a" fill-opacity="0.7" stroke={outline(t)}
-              stroke-width={sw * 1.1} stroke-opacity="0.55" stroke-dasharray={sw * 2.5}
-              class="tile empty"
-              on:mouseenter={() => (hovered = t)} on:mouseleave={() => (hovered = null)} />
-          {:else}
-            <rect x={p.x} y={p.y} width={p.w} height={p.h} rx={Math.min(p.w, p.h) * 0.16}
-              fill={fill(t)} fill-opacity={fillOp(t)} stroke={outline(t)}
-              stroke-width={sw * (safe(t) ? 2.2 : 1.4)} stroke-opacity={safe(t) ? 1 : 0.5}
-              filter={safe(t) && selBW(t) / maxBW > 0.04 ? 'url(#glow)' : null}
-              class="tile" class:safe={safe(t)}
-              on:mouseenter={() => (hovered = t)} on:mouseleave={() => (hovered = null)} on:click={() => open(t)} />
+          {#if !hidden.has(t.kind)}
+            {@const p = pos(t)}
+            <rect x={p.x} y={p.y} width={p.w} height={p.h} fill="transparent" class="tile" class:empty={t.kind === 'empty'}
+              on:mouseenter={() => (hovered = t)} on:mouseleave={() => (hovered = null)} on:click={() => t.kind !== 'empty' && open(t)} />
+            {#if t.kind !== 'empty' && labelOp > 0.02}
+              <text x={p.x + p.w / 2} y={p.y + p.h / 2} text-anchor="middle" dominant-baseline="central"
+                font-size={Math.min(p.h * 0.9, p.w * 1.27 / Math.max(2, tileLabel[tileKey(t.noc0)].length))}
+                font-weight="700" class="lbl glyph" fill={labelFill(t, cfg)} opacity={labelOp * kindOp(t, cfg)}>{tileLabel[tileKey(t.noc0)]}</text>
+            {/if}
           {/if}
         {/each}
 
-        <!-- router beads: the wires pass through every router, incl. empty tiles (official style) -->
-        {#if lod !== 'low'}
-          {#each fp.tiles as t (tileKey(t.noc0) + 'r')}
+        <!-- zoom past ~6× and the labels give way to each in-view tile's detailed cartoon -->
+        {#if cartoonOp > 0}
+          {#each visibleTiles as t (tileKey(t.noc0) + 'c')}
             {@const p = pos(t)}
-            <circle cx={p.x + p.w / 2} cy={p.y + p.h / 2} r={Math.min(p.w, p.h) * 0.09}
-              fill="#e8ecf4" opacity="0.85" stroke="#05060a" stroke-width={sw * 0.8} class="lbl" />
+            <svg x={p.x} y={p.y} width={p.w} height={p.h} viewBox="0 0 220 162" preserveAspectRatio="xMidYMid meet" opacity={cartoonOp} class="cartoon">
+              <TileCartoon tile={t} bw0={bw(t, 0)} bw1={bw(t, 1)} dram={t.dram_ctrl != null ? (dramBW[String(t.dram_ctrl)] ?? { r: 0, w: 0 }) : { r: 0, w: 0 }} />
+            </svg>
           {/each}
         {/if}
 
-        {#if srcTile}
-          {@const p = pos(srcTile)}
-          <rect x={p.x - p.w * 0.18} y={p.y - p.h * 0.18} width={p.w * 1.36} height={p.h * 1.36}
-            rx={p.w * 0.22} fill="none" stroke="#ffd24a" stroke-width={sw * 2.6}
-            class="srcmark" filter="url(#glow)" />
+        <!-- connector: each channel's centre die node → its GDDR6 chip badge (per-channel colour) -->
+        {#if dramInfo && dramPos}
+          {#each dramInfo.ctrls as c, i}
+            {#if dramCenters[c]}
+              <line x1={dramCenters[c][0]} y1={dramCenters[c][1]} x2={dramPos[i][0]} y2={dramPos[i][1]}
+                stroke={dramColor(c, cfg)} stroke-width={sw * 1.6} stroke-opacity={0.5 * cfg.dram.op * (dramEdit ? 1 : labelOp)} stroke-dasharray={sw * 4} class="lbl" />
+            {/if}
+          {/each}
         {/if}
 
-        {#if lod === 'high' || (layout === 'topo' && scale >= 1.5)}
-          {#each fp.tiles as t (tileKey(t.noc0))}
-            {@const p = pos(t)}
-            {#if t.kind === 'empty'}
-              <text x={p.x + p.w / 2} y={p.y + p.h * 0.5} font-size={sw * 4.5} fill="#69707f" text-anchor="middle" dominant-baseline="central" class="lbl">R·NIU</text>
-            {:else}
-              <text x={p.x + p.w / 2} y={p.y + p.h * 0.36} font-size={sw * 5.5} fill="#fff" text-anchor="middle" dominant-baseline="central" class="lbl">{t.label}</text>
-              {#if safe(t)}
-                <text x={p.x + p.w / 2} y={p.y + p.h * 0.68} font-size={sw * 5} text-anchor="middle" dominant-baseline="central" class="lbl">
-                  {#if noc === 2}<tspan fill={NOC0}>{mb(bw(t, 0))}</tspan><tspan fill="#555">/</tspan><tspan fill={NOC1}>{mb(bw(t, 1))}</tspan>{:else}<tspan fill={noc === 1 ? NOC1 : NOC0}>{mb(selBW(t))}</tspan>{/if}
-                </text>
-              {/if}
+        <!-- NIU stops, numbered N1,N2,… in noc0 order (NoC0 NIU top-left, NoC1 NIU bottom-right) -->
+        {#if cfg.niu0.show || cfg.niu1.show}
+          {#each fp.tiles as t (tileKey(t.noc0) + 'n')}
+            {#if !hidden.has(t.kind) && t.kind !== 'empty'}
+              {@const p = pos(t)}
+              {#if cfg.niu0.show}<text x={p.x + p.w * 0.26} y={p.y + p.h * 0.27} font-size={Math.min(p.w, p.h) * 0.26} fill={cfg.niu0.color} opacity={cfg.niu0.op} font-weight="700" text-anchor="middle" dominant-baseline="central" class="lbl glyph">N{niuIdx[tileKey(t.noc0)]}</text>{/if}
+              {#if cfg.niu1.show}<text x={p.x + p.w * 0.74} y={p.y + p.h * 0.73} font-size={Math.min(p.w, p.h) * 0.26} fill={cfg.niu1.color} opacity={cfg.niu1.op} font-weight="700" text-anchor="middle" dominant-baseline="central" class="lbl glyph">N{niuIdx[tileKey(t.noc0)]}</text>{/if}
             {/if}
+          {/each}
+        {/if}
+
+        <!-- GDDR6 chip badges on the board photo — per-channel colour + thin R/W; toggle 'dram' to drag/size -->
+        {#if dramInfo && dramPos}
+          {#each dramInfo.ctrls as c, i}
+            {@const pp = dramPos[i]}
+            {@const d = dramBW[String(c)] ?? { r: 0, w: 0 }}
+            {@const act = (d.r + d.w) / dramMax}
+            {@const w = dramSize[0]}
+            {@const h = dramSize[1]}
+            <g class="dchip" class:edit={dramEdit} transform="translate({pp[0]} {pp[1]})" opacity={dramEdit ? 1 : labelOp * cfg.dram.op} on:mousedown={(e) => startChip(e, i)}>
+              <rect x={-w / 2} y={-h / 2} width={w} height={h} rx="9" fill="#0b0d12cc"
+                stroke={act > 0.05 ? 'var(--accent)' : (dramEdit ? '#ffcc44' : dramColor(c, cfg))} stroke-opacity={act > 0.05 || dramEdit ? 1 : 0.7} stroke-width={sw * (dramEdit ? 2.2 : 1.6)} />
+              <text x="0" y={-h * 0.04} text-anchor="middle" font-size={h * 0.4} fill={dramColor(c, cfg)} font-weight="700" class="lbl">d{c}</text>
+              <rect x={-w * 0.4} y={h * 0.2} width={w * 0.8} height={h * 0.06} rx="2" fill="#1b2233" class="lbl" />
+              <rect x={-w * 0.4} y={h * 0.2} width={w * 0.4 * Math.min(1, d.r / dramMax)} height={h * 0.06} rx="2" fill="var(--good)" class="lbl" />
+              <rect x="0" y={h * 0.2} width={w * 0.4 * Math.min(1, d.w / dramMax)} height={h * 0.06} rx="2" fill="var(--accent)" class="lbl" />
+            </g>
           {/each}
         {/if}
       </g>
@@ -315,147 +441,79 @@
 
     {#if hovered}
       <div class="tip" style="left:{hx + 14}px; top:{hy + 14}px">
-        <b>{hovered.label}</b> · {hovered.kind}<br />
+        <b>{glyphOf(hovered)}</b> {hovered.label} · {hovered.kind}<br />
         noc0 {hovered.noc0[0]},{hovered.noc0[1]} · die {hovered.die[0]},{hovered.die[1]}
         {#if hovered.dram_ctrl !== null}<br />GDDR6 d{hovered.dram_ctrl}{/if}<br />
-        {#if safe(hovered)}<span style="color:{NOC0}">NoC0 {fmtAmt(bw(hovered, 0))}</span> · <span style="color:{NOC1}">NoC1 {fmtAmt(bw(hovered, 1))}</span>{:else if hovered.kind === 'empty'}<span class="muted">empty tile — router + NIU only (torus passthrough)</span>{:else}<span class="muted">not polled (mgmt)</span>{/if}
+        {#if safe(hovered)}<span style="color:{NOC0}">NoC0 {fmtBW(bw(hovered, 0))}</span> · <span style="color:{NOC1}">NoC1 {fmtBW(bw(hovered, 1))}</span>{:else if hovered.kind === 'empty'}<span class="muted">empty tile — router + NIU only (torus passthrough)</span>{:else}<span class="muted">not polled (mgmt)</span>{/if}
       </div>
     {/if}
 
-    <!-- inject + kernels panels -->
-    <button class="inject-toggle kbtn" class:on={kernelsOpen} on:click={() => (kernelsOpen = !kernelsOpen)}>▶ kernels</button>
-    <button class="inject-toggle" class:on={injectOpen} on:click={() => (injectOpen = !injectOpen)}>⚡ inject</button>
-
-    {#if kernelsOpen}
-      <div class="inject kpanel">
-        <div class="ihead"><b>tt-metal kernels</b> <span class="muted">on-chip · real flits</span></div>
-        {#if kInfo && !kInfo.available}
-          <div class="ierr">tt-metal build not found (set TT_METAL_HOME)</div>
-        {:else if !kInfo}
-          <div class="muted">loading test list…</div>
-        {:else}
-          <input class="kfilter" placeholder="filter {kInfo.tests.length} tests…" bind:value={kFilter} />
-          <div class="klist">
-            {#each kTests as t}
-              <div class="kitem">
-                <span class="kname" title={t}>{t.replace('TensixDataMovement', '')}</span>
-                <button on:click={() => runKernel(t)} disabled={!!kRunning}>run</button>
-              </div>
-            {/each}
-          </div>
-          {#if kRunning}
-            <div class="krunning">● running <b>{kRunning.replace('TensixDataMovement', '')}</b> — device owned by tt-metal, polling paused…</div>
-          {/if}
-          {#if kErr}<div class="ierr">{kErr}</div>{/if}
-          {#if kernelResult}
-            <div class="ires">
-              <div>
-                {kernelResult.passed ? '✔' : '✘'} <b>{kernelResult.name.replace('TensixDataMovement', '')}</b>
-                · {kernelResult.secs}s
-                {#if kernelResult.agg}
-                  <br />profiler: <b>{(kernelResult.agg.bw / 1e12).toFixed(2)} TB/s</b>
-                  · {kernelResult.agg.cores} cores · {(kernelResult.agg.total_bytes / 1e9).toFixed(2)} GB
-                {/if}
-              </div>
-              <span class="muted">chip shows the kernel's per-NoC silicon footprint (flip NoC0/NoC1)</span>
-              <button on:click={() => (kernelResult = null)}>clear footprint → live view</button>
-            </div>
-          {/if}
-        {/if}
-      </div>
-    {/if}
-    {#if injectOpen}
-      <div class="inject">
-        <div class="ihead"><b>inject traffic</b> <span class="muted">host-driven · NoC routing</span></div>
-
-        <label class="fld">source
-          <span class="src">
-            {#if injSrc}<b>tensix {injSrc[0]},{injSrc[1]}</b>{:else}<span class="muted">none</span>{/if}
-            <button class:on={pickMode} on:click={() => (pickMode = !pickMode)}>{pickMode ? 'click a tile…' : 'pick'}</button>
-          </span>
-        </label>
-
-        <label class="fld">pattern
-          <select bind:value={pattern}>
-            {#each patterns as p}<option value={p.id}>{p.label}</option>{/each}
-          </select>
-        </label>
-
-        <div class="params">
-          <label>len MB<input type="number" step="0.05" min="0.01" bind:value={lengthMB} /></label>
-          <label>fires<input type="number" min="1" bind:value={fires} /></label>
-          <label class="chk"><input type="checkbox" bind:checked={stream} />stream</label>
-        </div>
-
-        <div class="acts">
-          <button class="fire" on:click={fire} disabled={injBusy || !injSrc}>{streaming ? 're-fire' : 'fire'}</button>
-          <button on:click={stopInject} disabled={injBusy || !streaming}>stop</button>
-          {#if streaming}<span class="streaming">● streaming</span>{/if}
-        </div>
-
-        {#if injErr}<div class="ierr">{injErr}</div>{/if}
-        {#if injResult}
-          <div class="ires">
-            moved <b>{fmtBW(injResult.moved_bytes / (injResult.secs || 1))}</b>
-            · {(injResult.moved_bytes / 1e6).toFixed(2)} MB in {(injResult.secs * 1000).toFixed(1)} ms
-            <table class="dram">
-              <thead><tr><th>GDDR6</th><th class="num">NoC0</th><th class="num">NoC1</th></tr></thead>
-              <tbody>
-                {#each Object.entries(injResult.dram) as [c, d]}
-                  <tr><th>d{c}</th><td class="num" style="color:{NOC0}">{(d['0'] * 64 / 1e3).toFixed(0)}k</td><td class="num" style="color:{NOC1}">{(d['1'] * 64 / 1e3).toFixed(0)}k</td></tr>
-                {/each}
-              </tbody>
-            </table>
-            <span class="muted">bytes landed per controller · watch the rails light up live</span>
-          </div>
-        {/if}
-      </div>
-    {/if}
-
-    <!-- DRAM dashboard: 8 GDDR6 banks (capacity + live R/W) + PCIe host link -->
-    {#if dramInfo}
-      <div class="dram-bar">
-        <div class="banks">
-          {#each dramInfo.ctrls as c}
-            {@const d = dramBW[String(c)] ?? { r: 0, w: 0 }}
-            {@const act = (d.r + d.w) / dramMax}
-            <div class="bank" class:hot={act > 0.05} title="GDDR6 d{c} — read {fmtBW(d.r)} · write {fmtBW(d.w)}">
-              <div class="bars">
-                <div class="bar r" style="height:{Math.max(3, (d.r / dramMax) * 100)}%"></div>
-                <div class="bar w" style="height:{Math.max(3, (d.w / dramMax) * 100)}%"></div>
-              </div>
-              <div class="cap">{dramInfo.per_ctrl_gib}G</div>
-              <div class="bid">d{c}</div>
-            </div>
-          {/each}
-        </div>
-        <div class="dram-meta">
-          <div class="tot">GDDR6 · <b>{dramInfo.total_gib} GiB</b></div>
-          <div class="rwkey"><i class="r"></i>read <i class="w"></i>write</div>
-          {#if pcieInfo}<div class="pcie">host · PCIe <b>{pcieInfo.link}</b> <span class="muted">~{pcieInfo.gbps_per_dir} GB/s</span></div>{/if}
-        </div>
-      </div>
-    {/if}
+    {#if selected}<TilePane tile={selected} on:close={() => (selected = null)} />{/if}
 
     <div class="hud">
       <div class="row">
-        <div class="seg">
-          <button class:on={layout === 'card'} on:click={() => setLayout('card')}>card</button>
-          <button class:on={layout === 'topo'} on:click={() => setLayout('topo')}>topology</button>
-        </div>
         <button on:click={reset} disabled={scale === 1}>reset zoom</button>
         <span>{scale.toFixed(1)}×</span>
-        {#if layout === 'card'}<button class:on={align} on:click={() => (align = !align)}>align</button>{/if}
+        <button class:on={align} on:click={() => (align = !align)}>align</button>
+        <button class:on={dramEdit} on:click={() => (dramEdit = !dramEdit)} title="drag GDDR6 badges onto their chips">dram</button>
+        <button on:click={saveDefaults} title="write the current style + placement to ui-defaults.json (git)">save ⤓</button>
+        <button on:click={loadDefaults} title="pull the committed defaults from the server">load</button>
       </div>
-      <div class="legend">
-        <div class="seg">
-          <button class:on={noc === 0} on:click={() => (noc = 0)}><i style="background:{NOC0}"></i>NoC0</button>
-          <button class:on={noc === 1} on:click={() => (noc = 1)}><i style="background:{NOC1}"></i>NoC1</button>
-          <button class:on={noc === 2} on:click={() => (noc = 2)}>both</button>
+      {#if saveMsg}<div class="savemsg">{saveMsg}</div>{/if}
+      {#if dramEdit}
+        <div class="cal">
+          <b>place GDDR6 chips</b> — drag each <b>d#</b> badge onto its chip
+          <div class="nums">
+            <label>width<input type="number" bind:value={dramSize[0]} /></label>
+            <label>height<input type="number" bind:value={dramSize[1]} /></label>
+          </div>
+          <button on:click={resetDram}>reset placement</button>
+          <span class="muted">drag to place · width/height set the badge aspect · saved locally</span>
         </div>
-        <span class="muted">{noc === 2 ? 'both NoCs' : noc === 0 ? 'NoC0 ▸▾ east+south' : 'NoC1 ◂▴ west+north'} · {layout === 'topo' ? 'dashed = wrap' : 'interleave + wrap'}</span>
+      {/if}
+      {#if styleEl}
+        {@const e = styleEl}
+        <div class="cal style">
+          <b>{ELNAME[e] || e}</b> <span class="muted">colour / opacity{e === 'noc0' || e === 'noc1' ? ' / returns' : ''}</span>
+          {#if e === 'dram'}
+            <div class="srow"><span class="sn">channels</span><span class="dchs">{#each cfg.dram.ch as _, i}<input type="color" bind:value={cfg.dram.ch[i]} title="d{i}" />{/each}</span></div>
+            <div class="srow"><span class="sn">opacity</span><input type="range" min="0" max="1" step="0.05" bind:value={cfg.dram.op} /></div>
+          {:else}
+            <div class="srow"><span class="sn">colour</span><input type="color" bind:value={cfg[e].color} /><input type="range" min="0" max="1" step="0.05" bind:value={cfg[e].op} title="opacity" /></div>
+          {/if}
+          {#if e === 'noc0' || e === 'noc1'}
+            <div class="srow"><span class="sn">H return</span><input class="m" type="number" bind:value={cfg[e].h.s} title="stretch" /><input class="m" type="number" bind:value={cfg[e].h.w} title="width" /><input class="m" type="number" bind:value={cfg[e].h.a} title="angle°" /></div>
+            <div class="srow"><span class="sn">V return</span><input class="m" type="number" bind:value={cfg[e].v.s} title="stretch" /><input class="m" type="number" bind:value={cfg[e].v.w} title="width" /><input class="m" type="number" bind:value={cfg[e].v.a} title="angle°" /></div>
+          {/if}
+          {#if e === 'niu0' || e === 'niu1'}
+            <label class="chk"><input type="checkbox" bind:checked={cfg[e].show} /> show NIU markers on every tile</label>
+          {/if}
+          <div class="srow"><button on:click={() => { cfg[e] = JSON.parse(JSON.stringify(DEF_CFG[e])); cfg = cfg }}>reset</button><button on:click={() => (styleEl = null)}>done</button></div>
+        </div>
+      {/if}
+      <!-- tile-type chips: toggle show/hide, ⚙ to style that type -->
+      <div class="tlegend">
+        {#each kinds as k}
+          <span class="tk" class:off={hidden.has(k)}>
+            <button class="tkb" on:click={() => toggleKind(k)} title="show/hide {KIND_NAME[k]} ({kindCount[k]})">
+              <span class="sw" style="background:{kindSwatch(k, cfg)}"></span><b>{GLYPH[k] ?? '?'}</b>{KIND_NAME[k]}<span class="muted">{kindCount[k]}</span>
+            </button>
+            {#if cfg[k]}<button class="gear" class:on={styleEl === k} on:click={() => (styleEl = styleEl === k ? null : k)} title="style {KIND_NAME[k]}">⚙</button>{/if}
+          </span>
+        {/each}
       </div>
-      {#if align && layout === 'card'}
+      <!-- NoC + NIU elements: chip toggles visibility, ⚙ styles (NoC colour/opacity/returns) -->
+      <div class="tlegend">
+        {#each ['noc0', 'noc1', 'niu0', 'niu1'] as k}
+          <span class="tk" class:off={!cfg[k].show}>
+            <button class="tkb" on:click={() => { cfg[k].show = !cfg[k].show; cfg = cfg }} title="show/hide {ELNAME[k]}">
+              <span class="sw" style="background:{cfg[k].color}"></span>{ELNAME[k]}
+            </button>
+            <button class="gear" class:on={styleEl === k} on:click={() => (styleEl = styleEl === k ? null : k)} title="style {ELNAME[k]}">⚙</button>
+          </span>
+        {/each}
+      </div>
+      {#if align}
         <div class="cal">
           <b>align overlay</b> — arrows move · shift=fast · <kbd>+</kbd>/<kbd>-</kbd> size
           <div class="nums">
@@ -480,92 +538,48 @@
   svg.grabbing { cursor: grabbing; }
   .tile { cursor: pointer; }
   .tile.empty { cursor: default; }
-  .tile.safe:hover { stroke: #fff !important; stroke-opacity: 1 !important; }
+  .tile:hover { fill: rgba(255, 255, 255, 0.08); }
   .lbl { pointer-events: none; font-family: ui-monospace, monospace; }
+  .cartoon { pointer-events: none; }
+  .glyph { paint-order: stroke; stroke: #05060a; stroke-width: 0.9px; }
+  .dchip { pointer-events: none; }
+  .dchip.edit { pointer-events: auto; cursor: grab; }
+  .dchip.edit:active { cursor: grabbing; }
 
   .tip { position: absolute; pointer-events: none; z-index: 5; background: #0d0f14f2; border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; font-size: 12px; line-height: 1.5; max-width: 240px; }
+  .tip b { color: var(--accent); }
   .muted { color: var(--muted); }
   kbd { background: var(--panel2); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; }
 
-  .dram-bar {
-    position: absolute; left: 0; right: 0; bottom: 0; z-index: 4;
-    display: flex; align-items: flex-end; gap: 16px;
-    background: linear-gradient(transparent, #0a0c10ee 45%); padding: 18px 16px 8px;
-    pointer-events: none;
-  }
-  .dram-bar > * { pointer-events: auto; }
-  .banks { display: flex; gap: 5px; align-items: flex-end; }
-  .bank { width: 30px; display: flex; flex-direction: column; align-items: center; gap: 2px; background: #14171dcc; border: 1px solid var(--line); border-radius: 4px; padding: 4px 2px; }
-  .bank.hot { border-color: var(--accent); box-shadow: 0 0 8px #ff8a4c66; }
-  .bars { display: flex; gap: 2px; align-items: flex-end; height: 34px; }
-  .bar { width: 6px; border-radius: 2px 2px 0 0; min-height: 3px; transition: height 0.25s; }
-  .bar.r { background: var(--good); }
-  .bar.w { background: var(--accent); }
-  .bank .cap { font-size: 9px; color: var(--muted); }
-  .bank .bid { font-size: 10px; color: var(--fg); }
-  .dram-meta { display: flex; flex-direction: column; gap: 3px; font-size: 12px; padding-bottom: 6px; }
-  .dram-meta .tot b { color: var(--good); }
-  .rwkey { color: var(--muted); display: flex; align-items: center; gap: 5px; }
-  .rwkey i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
-  .rwkey i.r { background: var(--good); }
-  .rwkey i.w { background: var(--accent); margin-left: 6px; }
-  .pcie b { color: var(--noc1); }
 
   .hud { position: absolute; left: 12px; bottom: 92px; z-index: 4; background: #0d0f14e6; border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; display: flex; flex-direction: column; gap: 8px; font-size: 12px; max-width: 380px; }
   .row { display: flex; align-items: center; gap: 10px; }
   .hud button { background: var(--panel2); color: var(--fg); border: 1px solid var(--line); border-radius: 5px; padding: 2px 9px; cursor: pointer; font: inherit; }
   .hud button.on { background: var(--accent); color: #1a1206; border-color: var(--accent); }
   .hud button:disabled { opacity: 0.4; cursor: default; }
-  .seg { display: flex; } .seg button { border-radius: 0; } .seg button:first-child { border-radius: 5px 0 0 5px; } .seg button:last-child { border-radius: 0 5px 5px 0; border-left: 0; }
-  .legend { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-  .lg { display: flex; align-items: center; gap: 4px; color: var(--muted); }
-  .lg i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+  .tlegend { display: flex; flex-wrap: wrap; gap: 5px; border-top: 1px solid var(--line); padding-top: 7px; }
+  .tk { display: flex; align-items: center; background: var(--panel2); border: 1px solid var(--line); border-radius: 5px; }
+  .tk.off { opacity: 0.4; }
+  .tkb { display: flex; align-items: center; gap: 4px; font: inherit; font-size: 11px; background: none; border: none; color: var(--fg); padding: 2px 4px 2px 7px; cursor: pointer; }
+  .tk .sw { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+  .tkb b { font-family: ui-monospace, monospace; }
+  .tkb .muted { color: var(--muted); }
+  .gear { background: none; border: none; border-left: 1px solid var(--line); color: var(--muted); cursor: pointer; font-size: 11px; padding: 2px 6px; }
+  .gear:hover, .gear.on { color: var(--accent); }
+  .savemsg { color: var(--good); font-size: 11px; }
+  .style .srow .m { width: 42px; background: var(--panel2); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; font: inherit; }
+  .chk { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 5px; }
   .cal { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--line); padding-top: 7px; }
+  .style { max-height: 300px; overflow-y: auto; }
+  .srow { display: flex; align-items: center; gap: 7px; }
+  .srow .sn { width: 78px; color: var(--muted); font-size: 11px; }
+  .srow input[type=color] { width: 22px; height: 18px; padding: 0; border: 1px solid var(--line); border-radius: 3px; background: none; cursor: pointer; }
+  .srow input[type=range] { flex: 1; min-width: 60px; }
+  .dchs { display: flex; gap: 2px; flex: 1; }
+  .dchs input[type=color] { width: 15px; height: 16px; padding: 0; border: 1px solid var(--line); border-radius: 2px; cursor: pointer; }
   .cal code { color: var(--accent); user-select: all; }
   .nums { display: flex; gap: 8px; }
   .nums label { display: flex; flex-direction: column; color: var(--muted); font-size: 11px; gap: 2px; }
   .nums input { width: 56px; background: var(--panel2); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; font: inherit; }
   .loading { display: grid; place-items: center; height: 100%; color: var(--muted); }
-
-  .srcmark { animation: pulse 1.3s ease-in-out infinite; }
-  @keyframes pulse { 0%, 100% { stroke-opacity: 1; } 50% { stroke-opacity: 0.35; } }
-
-  .inject-toggle {
-    position: absolute; top: 12px; right: 12px; z-index: 6;
-    background: var(--panel2); color: var(--fg); border: 1px solid var(--line);
-    border-radius: 6px; padding: 5px 11px; cursor: pointer; font: inherit;
-  }
-  .inject-toggle.on { background: var(--accent); color: #1a1206; border-color: var(--accent); }
-  .kbtn { right: 96px; }
-  .kpanel { width: 330px; }
-  .kfilter { width: 100%; }
-  .klist { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
-  .kitem { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 1px 0; }
-  .kname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
-  .krunning { color: var(--accent); animation: pulse 1.3s infinite; }
-  .inject {
-    position: absolute; top: 48px; right: 12px; z-index: 6; width: 270px;
-    background: #0d0f14f2; border: 1px solid var(--line); border-radius: 8px;
-    padding: 11px 13px; display: flex; flex-direction: column; gap: 9px; font-size: 12px;
-  }
-  .ihead { display: flex; justify-content: space-between; align-items: baseline; }
-  .fld { display: flex; flex-direction: column; gap: 4px; color: var(--muted); }
-  .src { display: flex; align-items: center; gap: 8px; color: var(--fg); }
-  .inject select, .inject input { background: var(--panel2); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 3px 5px; font: inherit; }
-  .inject button { background: var(--panel2); color: var(--fg); border: 1px solid var(--line); border-radius: 5px; padding: 3px 10px; cursor: pointer; font: inherit; }
-  .inject button.on { background: var(--accent); color: #1a1206; border-color: var(--accent); }
-  .inject button:disabled { opacity: 0.4; cursor: default; }
-  .params { display: flex; gap: 8px; }
-  .params label { display: flex; flex-direction: column; gap: 3px; color: var(--muted); font-size: 11px; }
-  .params input { width: 56px; }
-  .params .chk { flex-direction: row; align-items: center; gap: 4px; align-self: end; }
-  .acts { display: flex; align-items: center; gap: 8px; }
-  .acts .fire { background: var(--accent); color: #1a1206; border-color: var(--accent); font-weight: 600; }
-  .streaming { color: var(--good); animation: pulse 1.3s infinite; }
-  .ierr { color: var(--bad); background: #3a1f23; border-radius: 4px; padding: 5px 7px; }
-  .ires { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--line); padding-top: 8px; }
-  .ires b { color: var(--accent); }
-  table.dram { border-collapse: collapse; }
-  table.dram th, table.dram td { padding: 1px 8px 1px 0; }
-  table.dram .num { text-align: right; font-variant-numeric: tabular-nums; }
 </style>

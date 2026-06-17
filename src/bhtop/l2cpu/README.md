@@ -83,6 +83,11 @@ l2cpu> quit
 | `load <t> <hart> <file> [--addr 0x..] [--lang asm\|c\|rust]` | compile + load + redirect a hart, live |
 | `tele <t> [n]` | read `n` telemetry slots (slot 0 = heartbeat convention) |
 | `peek <t> <addr> [n]` / `poke <t> <addr> <val>` | raw L2CPU reads/writes |
+| `cmd <t> <hart> <op> [arg0]` | ring a hart's command mailbox (live register/virus control) |
+| `vregs <t> [hart] [--ew 8\|16\|32\|64]` | decode a hart's vector registers v0..v31 + vector CSRs |
+| `power` | board power / current / temperature (ARC telemetry) |
+| `clocks` | core (l2cpuclk) vs uncore (axiclk/arcclk) vs Tensix (aiclk) frequencies |
+| `freq <mhz>` | set the L2CPU **core** PLL — verified points only (200, 1750) |
 | `map` | print the annotated register/memory map (no device needed) |
 | `regs <t> [hart]` | read + decode a tile's live hart-control registers |
 | `disasm <file> [--addr 0x..]` | compile and show the disassembly (no device needed) |
@@ -107,6 +112,51 @@ int main(void){ unsigned i=0; for(;;){ TELE[0]=++i; TELE[1]=i*i; } }
 Convention: **slot 0 = a monotonically increasing heartbeat** (liveness); slots 1–63 are
 yours. `bhtop-l2cpu tele <t>` prints non-zero slots and labels slot 0.
 
+> **Direction matters (cache!).** Telemetry is hart→host and works from cached DRAM because
+> the hart's *writes* reach GDDR. The reverse — **host→hart** — does NOT: the x280 D-cache
+> does not snoop the host's NoC writes, so a host-written value in cached GDDR `0x3000_xxxx`
+> reads **stale** on the hart (it works once while the line is cold, then goes deaf). That is
+> why the command mailbox (below) lives in **uncached peripheral scratch** `0x2001_0100`, not
+> DRAM. (`cbo.inval` would also fix a cached mailbox but **traps as illegal** on this x280.)
+
+---
+
+## Live control: the command mailbox (host → hart)
+
+A per-hart DRAM-style doorbell the host rings to update a hart **register or behavior live**,
+without an RNMI/code swap. The host can't write x280 CSRs/GPRs/vregs over the NoC — only the
+hart can — so this is cooperative: the host writes `op`+`arg` into the hart's mailbox and bumps
+a seq word; the hart polls it (`bh_cmd()` / `bh_cmd_seq()`) and applies it. The mailbox is in
+**uncached peripheral scratch** so host writes are immediately visible to the hart (see the
+cache note above). Window: `0x20010100 + hart*0x10` = `[seq, op, arg0, arg1]`.
+
+```sh
+bhtop-l2cpu cmd 0 0 11 0xDEADBEEF     # op 11 = set the vec_virus seed, live
+bhtop-l2cpu cmd 0 0 10 8              # op 10 = run only instruction class 8 (vfmacc)
+bhtop-l2cpu cmd 0 0 12 1              # op 12 = auto-mutate (xorshift the seed each pass)
+```
+
+Ops are kernel-defined (`regmap.CMD_OPS`): `mailbox.c` demonstrates op 1 `set_csr(mscratch)`,
+2 `set_vreg(v16)`, 3 `set_vtype`; `vec_virus.c` adds 10 `select_class`, 11 `set_seed`,
+12 `mutate`, 4/5 `park`/`run`. Host API: `L2cpu.command(tile,hart,op,arg0,arg1)`. This is the
+non-preemptive sibling of `load`'s RNMI redirect (which swaps *code*).
+
+## Vector registers + power / clocks
+
+- **`bh_dump_vec()`** snapshots all 32 vector registers (`v0..v31`) + the 7 vector CSRs
+  (`vstart/vxsat/vxrm/vcsr/vl/vtype/vlenb`) to `0x30005000` (the host can't read vregs over the
+  NoC, same as GPRs). Decode with `L2cpu.vec_state(tile,hart,ew=)` / `bhtop-l2cpu vregs 0 0`.
+  (`bh_dump_state()` covers the 32 GPRs + scalar CSRs at `0x30003000` → `arch_state`.)
+- **`L2cpu.power()`** / `bhtop-l2cpu power` — board watts (`tdp`), amps, `vcore`, temperature,
+  fans, via ARC telemetry (the safe transport). **`clocks()`** reads core `l2cpuclk` vs uncore
+  `axiclk` vs Tensix `aiclk`. **`set_core_freq(mhz)`** / `freq` sets the L2CPU core PLL to a
+  **verified** point (200/1750) — arbitrary points are a hang risk and the uncore clock is the
+  transport, so it is intentionally not settable here.
+- **`vec_virus.c`** is a steerable RVV power-virus + per-instruction max-IPC probe: 8 independent
+  max-toggle feedback chains per instruction class, `mcycle`/`minstret`-bracketed, live-steerable
+  via the mailbox. `scripts/vec_virus_run.py` (IPC table), `vec_power_sweep.py` (watts/instruction),
+  `vec_freq_sweep.py` (IPC is frequency-invariant; throughput + power scale with core MHz).
+
 ---
 
 ## Writing a kernel
@@ -127,8 +177,10 @@ one canonical map) — see [HARDWARE.md](HARDWARE.md) for what each name means.
   load address); `.include "bh.inc"` for named addresses (`BH_TELE_BASE`, …). See
   `examples/heartbeat.s`.
 
-All three are linked at the **load address** (default `0x30001000`, override with `--addr`)
+All three are linked at the **load address** (default `0x30008000`, override with `--addr`)
 by `rt/link.ld`, which puts `.text._start` first, packs rodata/data, and reserves bss+stack.
+(Code loads *above* the data blocks — tele/arch/cmd/vector end ~`0x30007400` — so a large
+kernel can never spill into the telemetry it writes.)
 `.bss` is not in the flat image, so it's zeroed at startup (crt0 for C; do it yourself in
 asm/Rust if you use bss).
 
@@ -142,8 +194,12 @@ Examples: `examples/{heartbeat.s, counter.c, blink.rs}` (from-scratch) and
 | region | address | notes |
 |---|---|---|
 | RNMI redirect trampoline | DRAM `0x30000000` | installed by `bringup`; self-re-arming |
-| **user code (load addr)** | DRAM `0x30001000` | default; `--addr` to change |
-| telemetry block | DRAM `0x30002000` | 64 × u32 |
+| park/exc spin (`j .`) | DRAM `0x30000020` | hart parks here; RNMI exc target |
+| telemetry block (hart→host) | DRAM `0x30002000` | 64 × u32 per hart (`+hart*0x100`) |
+| arch-state dump | DRAM `0x30003000` | `bh_dump_state` → 32 GPRs + scalar CSRs (`+hart*0x200`) |
+| command mailbox (host→hart) | **peripheral** `0x20010100` | uncached! `[seq,op,arg0,arg1]` (`+hart*0x10`) |
+| vector-state dump | DRAM `0x30005000` | `bh_dump_vec` → v0..v31 + vector CSRs (`+hart*0x900`) |
+| **user code (load addr)** | DRAM `0x30008000` | default; `--addr` to change (above all data blocks) |
 | per-hart reset vector | `0x20010000 + hart*8` | initial pc (set by load → trampoline jumps here) |
 | RNMI trap / exc handler | `0x20010418 / 0x20010420 + hart*16` | trap→trampoline, exc→safe spin |
 | RNMI trigger | `0x20010414` bit `hart` | pull to seize that hart |

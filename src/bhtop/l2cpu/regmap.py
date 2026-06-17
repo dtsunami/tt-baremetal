@@ -30,14 +30,17 @@ NIU_DANGER = 0xFFFF_FFFF_FF00_0000  # NIU cfg window — poking it HANGS NoC0 (s
 # ---- L2CPU peripheral registers (x280 phys; per-hart = base + N*stride) ----
 RESET_VEC = 0x20010000             # +N*8   initial PC for hart N (low32, high32)
 HART_STATUS = 0x20010400           # all-harts run/halt/wfi/debug status (read-only)
-SPIN_ADDR = 0x20010120             # scratch we park harts in (a `j .` spin); also exc target
+SPIN_ADDR = 0x30000020             # `j .` park/exc target (moved to DRAM; scratch now holds the cmd mailbox)
 TRIGGER = 0x20010414               # write bit N -> fire an RNMI on hart N (the "seize")
 RNMI_TRAP = 0x20010418             # +N*16  RNMI trap-handler address for hart N
 RNMI_EXC = 0x20010420              # +N*16  RNMI exception-handler address for hart N
 
 # ---- DRAM layout we impose (uncached GDDR window, per tile) ----
 TRAMP_ADDR = 0x30000000            # self-re-arming RNMI redirect trampoline (bringup installs)
-CODE_ADDR = 0x30001000             # default user-code load address
+# User code loads ABOVE all the fixed data blocks (tele/arch/cmd/varch end at ~0x30007400) so a
+# kernel of any size can never collide with the telemetry it writes (a big kernel at 0x30001000
+# used to spill into 0x30002000). Code grows up from here into open GDDR; nothing sits above it.
+CODE_ADDR = 0x30008000             # default user-code load address (was 0x30001000, too small)
 TELE_ADDR = 0x30002000             # telemetry: hart 0's window (host reads back)
 TELE_SLOTS = 64                    # u32 slots per hart
 TELE_STRIDE = 0x100                # per-hart stride: hart N window = TELE_ADDR + N*0x100
@@ -47,12 +50,80 @@ TELE_STRIDE = 0x100                # per-hart stride: hart N window = TELE_ADDR 
 #  to DRAM. Per-hart block: 32 GPRs as u64 at +0x00, then key CSRs.)
 ARCH_ADDR = 0x30003000             # hart 0's arch-state block
 ARCH_STRIDE = 0x200                # per-hart stride (512 B): 32 GPRs (256 B) + CSRs
+
+# ---- host->hart command mailbox: a DRAM doorbell the hart polls to update a register ----
+# The host CANNOT write an x280 CSR/GPR/vreg over the NoC (only the hart can, from its own
+# code). So a live "register update" is cooperative: the host writes a value here and rings
+# the doorbell; the hart polls it and applies it to its own register.
+#
+# CRITICAL — must live in UNCACHED memory: the x280 D-cache does NOT snoop the host's NoC
+# writes, so a mailbox in cached GDDR (0x3000_xxxx) reads STALE on the hart (it worked only
+# while the line was cold, then went deaf). The peripheral scratch 0x2001_0100 IS uncached
+# (it is the same region the RNMI trampoline reads its host-written reset-vector from, which
+# is why the seize works), so host writes here are immediately visible to hart reads. cbo.inval
+# would also fix a cached mailbox but TRAPS as illegal on this x280, so we use region choice.
+# 64 B scratch holds 4 harts x 16 B (seq/op/arg0/arg1); SPIN was moved out to DRAM (0x30000020).
+CMD_ADDR = 0x20010100              # hart 0's command window (uncached peripheral scratch)
+CMD_STRIDE = 0x10                  # per-hart stride: hart N window = CMD_ADDR + N*0x10
+CMD_SLOTS = 4                      # u32 slots: [0]=seq doorbell [1]=op [2]=arg0 [3]=arg1
+CMD_OPS = {0: "nop", 1: "set_csr(mscratch)", 2: "set_vreg(v16)",
+           3: "set_vtype(0=e32m1,1=e32m4)", 4: "park", 5: "run",
+           10: "vvirus:select_class(arg0, 0xFFFFFFFF=all)", 11: "vvirus:set_seed(arg0)",
+           12: "vvirus:mutate(0=fixed,1=auto-randomize)"}
+
+# ---- vector-register snapshot: a hart writes its WHOLE vector file + vector CSRs here ----
+# bh_dump_state covers GPRs + scalar CSRs but NO vector state; bh_dump_vec() fills this gap:
+# 32 vector regs (VLEN/8 = 64 B each = 0x800) then the 7 vector CSRs as u64. Host can't read
+# vector regs over the NoC any more than GPRs, so the hart stores them to DRAM and we decode.
+VARCH_ADDR = 0x30005000            # hart 0's vector-state block
+VARCH_STRIDE = 0x900               # per-hart (2304 B): 32 vregs (0x800) + CSRs/magic (0x800+)
+VARCH_VREGS = 32                   # v0..v31
+VARCH_MAGIC = 0x0D0DEC00           # marker bh_dump_vec writes when the block is valid
+VARCH_CSR_OFF = {                  # vector CSR -> byte offset (after the 0x800 of vregs)
+    "vstart": 0x800, "vxsat": 0x808, "vxrm": 0x810, "vcsr": 0x818,
+    "vl": 0x820, "vtype": 0x828, "vlenb": 0x830, "magic": 0x838,
+}
+VEC_CSRS = [                       # (number, name, desc) — the RVV control/status CSRs
+    (0x008, "vstart", "element index where the next vector op resumes (usually 0)"),
+    (0x009, "vxsat", "fixed-point saturation flag"),
+    (0x00A, "vxrm", "fixed-point rounding mode"),
+    (0x00F, "vcsr", "vector control/status (vxrm<<1 | vxsat)"),
+    (0xC20, "vl", "active vector length (elements) set by the last vsetvl{i}"),
+    (0xC21, "vtype", "SEW/LMUL/tail/mask config set by the last vsetvl{i}"),
+    (0xC22, "vlenb", "bytes per vector register (VLEN/8 = 64 on x280)"),
+]
 ARCH_MAGIC = 0x0D0DEAD0            # marker bh_dump_state writes so the host knows it's valid
 ARCH_CSR_OFF = {                   # CSR name -> byte offset within a hart's block
     "mhartid": 0x100, "mcycle": 0x108, "minstret": 0x110, "mstatus": 0x118,
     "mepc": 0x120, "mcause": 0x128, "mtval": 0x130, "mnepc": 0x138,
     "mncause": 0x140, "pc": 0x148, "magic": 0x150,
 }
+
+# ---- single source of truth for the kernel-facing memory map ----------------------------
+# THIS module is the one place the map lives. The lab toolchain injects every name below into
+# each compile (C: -D, asm: -Wa,--defsym, Rust: a generated include) so the harness headers
+# (bh.h / tele.h / bh.inc / bh.rs) never hardcode the numbers — they carry #ifndef/.ifndef
+# fallbacks that the injected values override, and Rust includes the generated file outright.
+# Move an address HERE and every kernel picks it up on the next build, with nothing to keep in
+# sync. (BH_CODE_BASE is injected per-compile = the actual load address; see harness_defines.)
+# NOTE: bh.h's file-scope asm (bh_dump_state / bh_dump_vec) can't take a C macro, so the addresses
+# + magics it embeds as `li`/`lui` literals (ARCH_ADDR/VARCH_ADDR, ARCH_MAGIC/VARCH_MAGIC) are NOT
+# injected — they mirror this module by hand. Everything reached from C / asm-via-bh.inc / Rust is.
+HARNESS_MAP = {
+    "BH_TRAMP_BASE": TRAMP_ADDR,
+    "TELE_BASE": TELE_ADDR, "TELE_STRIDE": TELE_STRIDE, "TELE_SLOTS": TELE_SLOTS,
+    "BH_TELE_BASE": TELE_ADDR, "BH_TELE_STRIDE": TELE_STRIDE, "BH_TELE_SLOTS": TELE_SLOTS,
+    "BH_ARCH_BASE": ARCH_ADDR, "BH_ARCH_STRIDE": ARCH_STRIDE,
+    "BH_CMD_BASE": CMD_ADDR, "BH_CMD_STRIDE": CMD_STRIDE,
+    "BH_VARCH_BASE": VARCH_ADDR, "BH_VARCH_STRIDE": VARCH_STRIDE,
+}
+
+
+def harness_defines(base):
+    """name -> int for every compile-time constant the lab injects into a kernel build.
+    `base` is the per-compile load address, surfaced as BH_CODE_BASE so it always matches
+    where the image is actually loaded (= the linker's LOAD_ADDR), even on a custom deploy."""
+    return {**HARNESS_MAP, "BH_CODE_BASE": base}
 
 # ---- ARC registers (reached via pyluwen axi_*, NOT the NoC — avoids the hang hazard) ----
 PLL4_BASE = 0x80020500             # L2CPU PLL #4 control block
@@ -73,6 +144,8 @@ REGIONS = [
      "per-hart 64-slot windows (hart N at +N*0x100); your kernel writes, host reads (`tele`)"),
     ("DRAM: arch-state", ARCH_ADDR, ARCH_STRIDE * HARTS, "RW",
      "per-hart register-file dump (hart N at +N*0x200); bh_dump_state() writes 32 GPRs + CSRs"),
+    ("Peripheral: cmd mailbox", CMD_ADDR, CMD_STRIDE * HARTS, "RW",
+     "host->hart doorbell in uncached scratch (hart N at +N*0x10); host writes op/arg + bumps seq, hart polls"),
     ("DRAM: uncached GDDR", 0x30000000, 0x10000000, "RW/X",
      "the whole uncached off-chip GDDR window; code/data live here, no cache flush needed"),
     ("Peripheral (passthrough)", 0x20000000, 0x00020000, "RW",

@@ -120,6 +120,52 @@ class App:
     def c_poke(self, a):
         dev = self.need(); dev.poke(_i(a[0]), _i(a[1]), _i(a[2])); print("ok")
 
+    def c_cmd(self, a):
+        """Ring a hart's DRAM mailbox so it updates a register live (needs a polling kernel)."""
+        dev = self.need(); t, hart, op = _i(a[0]), _i(a[1]), _i(a[2])
+        arg0 = _i(a[3]) if len(a) > 3 else 0
+        seq = dev.command(t, hart, op, arg0)
+        name = regmap.CMD_OPS.get(op, "?")
+        print(f"rang tile{t} hart{hart}: op={op} ({name}) arg0=0x{arg0:08X} -> seq={seq}. "
+              f"`tele {t} {hart}` to see the hart ack + the register change.")
+
+    def c_vregs(self, a):
+        """Decode a hart's vector-register dump (needs a kernel that calls bh_dump_vec())."""
+        dev = self.need(); t = _i(a[0]); hart = _i(a[1]) if len(a) > 1 else 0
+        ew = _i(_opt(a, "--ew", "32"))
+        vs = dev.vec_state(t, hart, ew=ew)
+        if not vs["valid"]:
+            print(f"tile {t} hart {hart}: no vector snapshot (magic absent). Add bh_dump_vec() "
+                  "to your kernel + deploy it first."); return
+        print(f"tile {t} hart {hart} vector state  VLEN={vs['vlen']}  vtype={vs['vtype']}  "
+              f"(view e{ew})")
+        for r in vs["vregs"]:
+            els = r[f"e{ew}"]
+            head = " ".join(els[:8]) + (" …" if len(els) > 8 else "")
+            print(f"  v{r['v']:<2} {head}")
+        print("  vCSRs: " + "  ".join(f"{k}={v}" for k, v in vs["csr"].items() if k != "magic"))
+
+    def c_power(self, a):
+        """Live board power / clocks / temperature (ARC telemetry — track the virus in watts)."""
+        p = self.need().power()
+        print(f"  power={p['power_w']}W  current={p['current_a']}A  input={p['input_power_w']}W  "
+              f"vcore={p['vcore_mv']}mV")
+        print(f"  Tasic={p['asic_temp_c']}C  aiclk={p['aiclk_mhz']}MHz  "
+              f"l2cpuclk={p['l2cpuclk_mhz']}MHz  fan={p['fan_rpm']}rpm  throttle={p['throttler']}")
+
+    def c_clocks(self, a):
+        """Core (l2cpuclk) vs uncore (axiclk/arcclk) vs Tensix (aiclk) frequencies."""
+        c = self.need().clocks()
+        print(f"  CORE  l2cpu = {c['core_l2cpu_mhz']} MHz")
+        print(f"  UNCORE axi = {c['uncore_axi_mhz']}  arc = {c['arc_mhz']}  "
+              f"tensix aiclk = {c['tensix_ai_mhz']} MHz  (ddr {c['ddr_speed']}, vcore {c['vcore_mv']}mV)")
+
+    def c_freq(self, a):
+        """Set the L2CPU CORE PLL to a verified point (200 or 1750). Uncore is not settable."""
+        dev = self.need(); mhz = _i(a[0])
+        r = dev.set_core_freq(mhz)
+        print(f"core PLL -> {r['mhz']} MHz. clocks now: {r['clocks']['core_l2cpu_mhz']}")
+
     def c_disasm(self, a):
         pos = [x for x in a if not x.startswith("--")]
         addr = _i(_opt(a, "--addr", hex(CODE_ADDR)))
@@ -158,7 +204,8 @@ class App:
 
     CMDS = {"help": c_help, "?": c_help, "examples": c_examples, "tiles": c_tiles, "status": c_status,
             "bringup": c_bringup, "load": c_load, "run": c_load, "tele": c_tele, "telemetry": c_tele,
-            "peek": c_peek, "poke": c_poke, "disasm": c_disasm, "map": c_map, "regs": c_regs,
+            "peek": c_peek, "poke": c_poke, "cmd": c_cmd, "vregs": c_vregs, "power": c_power,
+            "clocks": c_clocks, "freq": c_freq, "disasm": c_disasm, "map": c_map, "regs": c_regs,
             "reset": c_reset}
 
     def run(self, argv):

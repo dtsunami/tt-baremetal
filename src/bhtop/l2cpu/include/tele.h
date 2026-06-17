@@ -12,9 +12,17 @@
  * reads each hart's slots separately. No CPU caches are involved (uncached DRAM), so
  * the host sees writes immediately. */
 #pragma once
+/* These mirror regmap.py and are injected by the lab toolchain (-D) on every build; the
+ * #ifndef fallbacks below are only for a standalone compile. */
+#ifndef TELE_BASE
 #define TELE_BASE 0x30002000u    /* hart 0's window */
+#endif
+#ifndef TELE_STRIDE
 #define TELE_STRIDE 0x100u       /* per-hart stride: hart N window = TELE_BASE + N*0x100 */
+#endif
+#ifndef TELE_SLOTS
 #define TELE_SLOTS 64u
+#endif
 
 /* the running hart's id (0..3) — picks its telemetry window */
 static inline unsigned int bh__hartid(void) {

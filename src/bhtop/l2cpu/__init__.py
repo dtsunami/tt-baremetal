@@ -29,6 +29,8 @@ from .regmap import (                                                  # noqa: F
     RESET_VEC, RNMI_TRAP, RNMI_EXC, TRIGGER, HART_STATUS, SPIN_ADDR,
     TRAMP_ADDR, CODE_ADDR, TELE_ADDR, TELE_SLOTS, TELE_STRIDE,
     ARCH_ADDR, ARCH_STRIDE, ARCH_MAGIC, ARCH_CSR_OFF,
+    CMD_ADDR, CMD_STRIDE, CMD_SLOTS,
+    VARCH_ADDR, VARCH_STRIDE, VARCH_VREGS, VARCH_MAGIC, VARCH_CSR_OFF,
     PLL_SOL as SOL,                                                    # clock.py verbatim
 )
 from . import regmap as _regmap  # GPR ABI names for arch-state decode
@@ -41,6 +43,18 @@ SPIN = [0x0000006F]              # j .
 
 class Hang(RuntimeError):
     """Raised on any device error so callers stop instead of hammering a wedged NoC."""
+
+
+def _decode_vtype(vtype):
+    """Human-readable RVV vtype: SEW/LMUL/tail/mask (RVV 1.0 encoding)."""
+    if vtype == 0:
+        return "unset"
+    lmul = {0: "m1", 1: "m2", 2: "m4", 3: "m8", 5: "mf8", 6: "mf4", 7: "mf2"}.get(vtype & 7, "?")
+    sew = {0: "e8", 1: "e16", 2: "e32", 3: "e64"}.get((vtype >> 3) & 7, "?")
+    ta = "ta" if (vtype >> 6) & 1 else "tu"
+    ma = "ma" if (vtype >> 7) & 1 else "mu"
+    vill = " VILL" if vtype >> 63 else ""
+    return f"{sew},{lmul},{ta},{ma}{vill}"
 
 
 # ---- PLL glide (ported verbatim from tt-bh-linux clock.py) ------------------
@@ -136,6 +150,33 @@ class L2cpu:
             self.chip.axi_write32(addr, val)
         except Exception as e:                       # noqa: BLE001
             raise Hang(f"axi_write 0x{addr:08X}: {type(e).__name__}: {e}") from e
+
+    def clocks(self):
+        """Read core vs uncore vs Tensix clocks (ARC telemetry; safe, read-only). The x280
+        CORE clock is l2cpuclk0..3; the UNCORE/fabric clock is axiclk (this is the transport
+        we talk to the chip over — see set_core_freq for why it's not settable here)."""
+        t = self.chip.get_telemetry()
+        def g(n):
+            try:
+                return getattr(t, n)
+            except Exception:
+                return None
+        return {"core_l2cpu_mhz": [g(f"l2cpuclk{i}") for i in range(4)],
+                "uncore_axi_mhz": g("axiclk"), "arc_mhz": g("arcclk"),
+                "tensix_ai_mhz": g("aiclk"), "ddr_speed": g("ddr_speed"),
+                "vcore_mv": g("vcore")}
+
+    def set_core_freq(self, mhz):
+        """Set the L2CPU CORE PLL — VERIFIED points only (200, 1750). Arbitrary PLL solutions
+        are unverified on this card and a bad one can wedge the clock (hang), so we refuse them.
+        The UNCORE/NoC clock is deliberately NOT settable here: it is the very transport we use
+        to reach the tile, so changing it can cut us off. Glides via the proven bringup path."""
+        if mhz not in SOL:
+            raise ValueError(f"only verified L2CPU core PLL points {sorted(SOL)} are allowed "
+                             "(arbitrary solutions are a hang risk); uncore/NoC clock is the "
+                             "transport and is not settable here")
+        self.set_pll(mhz)
+        return {"ok": True, "mhz": mhz, "clocks": self.clocks()}
 
     def set_pll(self, mhz):
         fb, pds = SOL[mhz]
@@ -262,6 +303,80 @@ class L2cpu:
         return {"tile": tile, "hart": hart, "valid": valid,
                 "gpr": [{"x": n, "abi": _regmap.GPR[n]["abi"], "val": hx(gpr[n])} for n in range(32)],
                 "csr": {name: hx(val) for name, val in csr.items()}}
+
+    # ---- command mailbox (host->hart doorbell; the hart polls + applies to a register) ----
+    def command(self, tile, hart, op, arg0=0, arg1=0):
+        """Ring hart N's DRAM doorbell so it updates a register live (cooperative, no RNMI).
+
+        Writes the payload (op, args) FIRST, then bumps the seq word LAST, so the hart never
+        sees a half-written command — it polls seq, and on a change reads a complete op/args.
+        Requires a kernel that polls bh_cmd() (e.g. examples/mailbox.c). Returns the new seq;
+        the kernel echoes the consumed seq into its telemetry so you can confirm it landed."""
+        base = CMD_ADDR + hart * CMD_STRIDE
+        self.wr(tile, base + 4, [op & 0xFFFFFFFF, arg0 & 0xFFFFFFFF, arg1 & 0xFFFFFFFF])
+        seq = (self.rd(tile, base) + 1) & 0xFFFFFFFF
+        self.wr(tile, base, [seq])
+        return seq
+
+    def mailbox(self, tile, hart):
+        """Read back a hart's command window (debug): {seq, op, arg0, arg1}."""
+        w = self.rdn(tile, CMD_ADDR + hart * CMD_STRIDE, 4)
+        return {"seq": w[0], "op": w[1], "arg0": w[2], "arg1": w[3]}
+
+    # ---- vector-register state (bh_dump_vec() snapshots the whole vector file to DRAM) ----
+    def vec_state(self, tile, hart, ew=32):
+        """Read + decode a hart's vector-register dump: 32 vregs (v0..v31) + vector CSRs.
+        `valid` is True only if the magic marker is present (kernel called bh_dump_vec()).
+        Each vreg is returned as a list of `ew`-bit element hex strings (ew in {8,16,32,64})
+        plus the raw little-endian bytes, so the UI can show whatever SEW view it wants."""
+        base = VARCH_ADDR + hart * VARCH_STRIDE
+        words = self.rdn(tile, base, VARCH_STRIDE // 4)          # 0x900/4 = 576 u32
+        vlenb = 64                                              # VLEN/8 on x280
+        per = vlenb // 4                                        # u32 per vreg = 16
+        def u64(byte_off):
+            i = byte_off // 4
+            return (words[i + 1] << 32) | words[i]
+        csr = {name: u64(off) for name, off in VARCH_CSR_OFF.items()}
+        valid = csr.get("magic", 0) == VARCH_MAGIC
+        step = ew // 32 if ew >= 32 else 1
+        vregs = []
+        for n in range(VARCH_VREGS):
+            w = words[n * per:(n + 1) * per]                    # 16 u32 = 64 bytes
+            raw = b"".join(int(x).to_bytes(4, "little") for x in w)
+            if ew == 64:
+                elems = [f"0x{int.from_bytes(raw[i:i+8],'little'):016X}" for i in range(0, 64, 8)]
+            elif ew == 16:
+                elems = [f"0x{int.from_bytes(raw[i:i+2],'little'):04X}" for i in range(0, 64, 2)]
+            elif ew == 8:
+                elems = [f"0x{b:02X}" for b in raw]
+            else:  # ew == 32
+                elems = [f"0x{x:08X}" for x in w]
+            vregs.append({"v": n, "e%d" % ew: elems})
+        return {"tile": tile, "hart": hart, "valid": valid, "vlen": vlenb * 8, "ew": ew,
+                "vregs": vregs, "csr": {k: f"0x{v:X}" for k, v in csr.items()},
+                "vtype": _decode_vtype(csr.get("vtype", 0))}
+
+    # ---- board power / clocks / temperature (ARC telemetry via pyluwen — safe transport) ----
+    def power(self):
+        """Live board power draw + clocks + temperature, read over the safe ARC path (same
+        transport as PLL/reset, NOT NoC-to-ARC). Use it to correlate the vector virus with real
+        watts: park vs run, and which instruction class draws the most. Fields that the FW does
+        not populate come back as None."""
+        t = self.chip.get_telemetry()
+        def g(n, d=None):
+            try:
+                return getattr(t, n)
+            except Exception:
+                return d
+        raw = g("asic_temperature")
+        temp = round(raw / 65536.0, 1) if isinstance(raw, (int, float)) and raw > 4096 else raw
+        return {
+            "power_w": g("tdp"), "current_a": g("tdc"), "input_power_w": g("input_power"),
+            "vcore_mv": g("vcore"), "aiclk_mhz": g("aiclk"),
+            "l2cpuclk_mhz": [g(f"l2cpuclk{i}") for i in range(4)],
+            "asic_temp_c": temp, "fan_rpm": g("fan_rpm"),
+            "throttler": g("throttler"), "power_limit_w": g("board_power_limit"),
+        }
 
     def peek(self, tile, addr, n=1):
         return self.rdn(tile, addr, n) if n > 1 else self.rd(tile, addr)

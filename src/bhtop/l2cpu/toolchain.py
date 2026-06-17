@@ -16,13 +16,15 @@ import struct
 import subprocess
 import tempfile
 
+from .regmap import harness_defines, CODE_ADDR
+
 SFPI = os.path.expanduser("~/tt-metal/runtime/sfpi/compiler/bin")
 HERE = os.path.dirname(__file__)
 RT = os.path.join(HERE, "rt")
 INCLUDE = os.path.join(HERE, "include")
 LINK_LD = os.path.join(RT, "link.ld")
 CRT0 = os.path.join(RT, "crt0.s")
-DEFAULT_BASE = 0x30001000
+DEFAULT_BASE = CODE_ADDR           # single source of truth: regmap.CODE_ADDR (the load window)
 
 RUST_TARGET = "riscv64gc-unknown-none-elf"
 EXTS = {".s": "asm", ".S": "asm", ".c": "c", ".rs": "rust"}
@@ -60,10 +62,23 @@ def _run(cmd, check=True, env=None):
     return r.returncode, (r.stdout + r.stderr)
 
 
-def _rust_env():
-    """rustc env with BH_RT pointing at rt/ so kernels can
-    `include!(concat!(env!(\"BH_RT\"), \"/bh.rs\"))` to pull in the harness."""
-    return {**os.environ, "BH_RT": RT}
+def _rust_env(mapf):
+    """rustc env: BH_RT points at rt/ so kernels can
+    `include!(concat!(env!(\"BH_RT\"), \"/bh.rs\"))`; BH_MAP points at the generated
+    memory-map include so bh.rs pulls the canonical regmap.py values (same single
+    source as the C -D / asm --defsym injection)."""
+    return {**os.environ, "BH_RT": RT, "BH_MAP": mapf}
+
+
+def _write_rust_map(d, base):
+    """Emit the canonical map (regmap.harness_defines) as Rust consts for bh.rs to include!.
+    Keeps Rust kernels in lockstep with the map with nothing to hand-sync."""
+    body = "// generated from regmap.py per build — do not edit; the lab injects this\n"
+    body += "".join(f"pub const {k}: usize = {v:#x};\n" for k, v in harness_defines(base).items())
+    p = os.path.join(d, "bh_map.rs")
+    with open(p, "w") as fh:
+        fh.write(body)
+    return p
 
 
 def detect_lang(path):
@@ -82,14 +97,17 @@ def _objcopy(elf, out):
 
 
 def _gcc_cmd(elf, base, lang, path):
+    defs = harness_defines(base)                             # canonical map (single source: regmap.py)
     cmd = [tool("gcc"), "-march=rv64gc", "-mabi=lp64d", "-nostdlib", "-nostartfiles",
            "-fno-pic", f"-T{LINK_LD}", f"-Wl,--defsym=LOAD_ADDR={base:#x}",
            "-Wl,--no-relax", "-o", elf]
     if lang == "c":
+        cmd += [f"-D{k}={v:#x}u" for k, v in defs.items()]   # inject the map; headers #ifndef-fallback
         cmd += ["-ffreestanding", "-O2", "-fno-builtin", "-fno-stack-protector",
                 "-fno-tree-loop-distribute-patterns", "-ffunction-sections",
                 f"-I{INCLUDE}", path, CRT0]                  # crt0 provides _start->main
     else:
+        cmd += [f"-Wa,--defsym={k}={v:#x}" for k, v in defs.items()]  # asm: same map as .equ-overriding symbols
         cmd += [f"-Wa,-I{INCLUDE}", path]                    # asm: -I lets `.include "bh.inc"` resolve
     return cmd
 
@@ -115,7 +133,8 @@ def _build_elf(path, elf, base, lang):
                 "Rust bare-metal toolchain not ready. Install:\n"
                 "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y\n"
                 "  . \"$HOME/.cargo/env\" && rustup target add " + RUST_TARGET)
-        _run(_rustc_cmd(elf, base, path), env=_rust_env())
+        mapf = _write_rust_map(os.path.dirname(elf), base)   # canonical map for bh.rs to include!
+        _run(_rustc_cmd(elf, base, path), env=_rust_env(mapf))
 
 
 def compile_source(path, base=DEFAULT_BASE, lang=None):

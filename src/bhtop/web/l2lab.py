@@ -163,15 +163,25 @@ def examples():
 L2CPU_DIR = os.path.join(PKG, "l2cpu")
 # id -> (title, kind, source). kind "md" = markdown file; "map" = the live register map;
 # "code" = a harness source shown fenced so it renders highlighted next to the editor.
+# Harness sources are shown fenced so they render highlighted next to the editor — these
+# are exactly the includes a kernel builds against (the `include/` headers + the `rt/` runtime).
 _DOCS = [
     ("hardware", "Hardware guide", "md", "HARDWARE.md"),
     ("readme", "Loader README", "md", "README.md"),
     ("linux", "Linux + SSH", "md", "LINUX.md"),
     ("map", "Register map", "map", None),
-    ("bh.h", "harness · bh.h", "code", "include/bh.h"),
-    ("bh.rs", "harness · bh.rs", "code", "rt/bh.rs"),
-    ("bh.inc", "harness · bh.inc", "code", "include/bh.inc"),
+    ("bh.h", "include · bh.h", "code", "include/bh.h"),
+    ("tele.h", "include · tele.h", "code", "include/tele.h"),
+    ("bh.inc", "include · bh.inc", "code", "include/bh.inc"),
+    ("bh.rs", "runtime · bh.rs", "code", "rt/bh.rs"),
+    ("crt0.s", "runtime · crt0.s", "code", "rt/crt0.s"),
+    ("link.ld", "runtime · link.ld", "code", "rt/link.ld"),
+    ("regmap.py", "canonical map · regmap.py", "code", "regmap.py"),
 ]
+
+# markdown fence language per source extension (drives syntax highlighting in the Docs pane)
+_FENCE = {".h": "c", ".inc": "asm", ".rs": "rust", ".s": "asm", ".S": "asm",
+          ".ld": "text", ".py": "python"}
 
 
 def docs_index():
@@ -188,7 +198,7 @@ def doc(doc_id):
         with open(full, encoding="utf-8", errors="replace") as fh:
             body = fh.read()
         if kind == "code":
-            fence = "c" if src.endswith((".h", ".inc")) else "rust"
+            fence = _FENCE.get(os.path.splitext(src)[1], "")
             body = f"# {os.path.basename(src)}\n\n```{fence}\n{body}\n```\n"
         return {"id": did, "title": title, "markdown": body}
     raise ValueError(f"unknown doc: {doc_id}")

@@ -23,10 +23,19 @@
 typedef unsigned int      u32;
 typedef unsigned long     u64;   /* lp64d: 'long' is 64-bit on rv64 */
 
-/* ---- DRAM windows we use (see regmap.REGIONS) -------------------------------------- */
+/* ---- DRAM windows we use (canonical map = regmap.py; the lab toolchain injects these as
+ * -D on every build, so they never drift. The #ifndef fallbacks are only for a standalone
+ * compile/linter; the injected value always wins. BH_CODE_BASE is injected per-compile =
+ * the real load address.) --------------------------------------------------------------- */
+#ifndef BH_TRAMP_BASE
 #define BH_TRAMP_BASE 0x30000000u   /* RNMI redirect trampoline (installed by bringup) */
-#define BH_CODE_BASE  0x30001000u   /* where your kernel is loaded + runs              */
+#endif
+#ifndef BH_CODE_BASE
+#define BH_CODE_BASE  0x30008000u   /* default load addr (above the data blocks)       */
+#endif
+#ifndef BH_TELE_BASE
 #define BH_TELE_BASE  TELE_BASE     /* 0x30002000 telemetry block (from tele.h)        */
+#endif
 
 /* ---- L2CPU peripheral registers (x280 phys; per-hart = base + N*stride) ------------ *
  * These are the knobs the host loader uses to park/seize harts. A kernel rarely needs
@@ -70,6 +79,35 @@ static inline void bh_perf(void) {
 static inline void bh_vec_enable(void) { __asm__ volatile("csrs mstatus, %0" :: "r"(0x600u)); }
 static inline u32 bh_vlenb(void) { u32 v; __asm__ volatile("csrr %0, 0xC22" : "=r"(v)); return v; }
 
+/* ---- command mailbox: a DRAM doorbell the host rings to update a register live --------
+ * The host can't write your CSRs/GPRs/vregs over the NoC — only you can, from here. So a
+ * live "register update" is cooperative: the host writes a value into this hart's mailbox
+ * and bumps the seq word; you poll bh_cmd() and apply it. The window is uncached, so the
+ * host's write is visible to your next load with no flush. Layout (u32):
+ *     cmd[0] = seq (doorbell — changes when a new command arrives)
+ *     cmd[1] = op    cmd[2] = arg0    cmd[3] = arg1
+ * Host side: L2cpu.command(tile,hart,op,arg0) or `bhtop-l2cpu cmd <t> <hart> <op> <arg0>`.
+ * See examples/mailbox.c for the poll loop. This is the non-preemptive sibling of the RNMI
+ * redirect (which the host uses to swap your CODE); here YOU stay in control and just read. */
+#ifndef BH_CMD_BASE
+#define BH_CMD_BASE   0x20010100u   /* uncached peripheral scratch (host writes are visible to */
+#endif
+#ifndef BH_CMD_STRIDE
+#define BH_CMD_STRIDE 0x10u         /* hart reads here; a cached DRAM mailbox reads stale)     */
+#endif
+static inline volatile u32 *bh_cmd(void) {            /* this hart's mailbox window */
+    return (volatile u32 *)(BH_CMD_BASE + bh_hartid() * BH_CMD_STRIDE);
+}
+/* Read the doorbell seq. The mailbox lives in UNCACHED peripheral scratch (BH_CMD_BASE), so the
+ * host's NoC write is visible to this load with no flush — a plain `cmd[0]` poll always sees the
+ * latest command. (A cached GDDR mailbox would read STALE: the hart's own writes reach GDDR so
+ * telemetry works, but host writes don't snoop the hart's D-cache. cbo.inval would refetch, but
+ * it TRAPS as illegal on this x280 — so we handle coherence by region choice, not a cache op.)
+ * cmd[1..3] read after sit in the same uncached window. */
+static inline u32 bh_cmd_seq(volatile u32 *cmd) {
+    return cmd[0];   /* uncached peripheral scratch — no cache op needed (cbo.inval traps here) */
+}
+
 /* ---- tiny helpers ------------------------------------------------------------------- */
 static inline void bh_spin(u64 cycles) {                 /* crude busy-wait (no clock dep)*/
     u64 end = bh_cycles() + cycles;
@@ -103,3 +141,46 @@ __asm__(
   "  csrr t1,0x351\n  sd t1,312(t0)\n  csrr t1,0x352\n  sd t1,320(t0)\n"       /* mnepc,mncause */
   "  auipc t1,0\n  sd t1,328(t0)\n  li t1,0x0D0DEAD0\n  sd t1,336(t0)\n"        /* pc, magic */
   "  csrr t1,0x350\n  csrr t0,mscratch\n  ret\n");
+
+/* ---- vector-register dump (bh_dump_state covers GPRs+scalar CSRs but NOT vector state) ----
+ * Snapshots all 32 vector registers (v0..v31, 64 B each) + the 7 vector CSRs into this hart's
+ * VARCH block (0x30005000 + hartid*0x900), so the host (which can't read vregs over the NoC)
+ * can decode them. Saves/restores the kernel's vtype+vl so calling it doesn't disturb your
+ * vector config. Uses caller-saved a0..a5 only (it's a function call). Call it in your loop to
+ * keep the cockpit's live vector view fresh. Decode host-side with L2cpu.vec_state(tile,hart). */
+#ifndef BH_VARCH_BASE
+#define BH_VARCH_BASE   0x30005000u
+#endif
+#ifndef BH_VARCH_STRIDE
+#define BH_VARCH_STRIDE 0x900u
+#endif
+extern void bh_dump_vec(void);
+__asm__(
+  ".globl bh_dump_vec\n.type bh_dump_vec,@function\n"
+  ".option arch, +v\n"
+  "bh_dump_vec:\n"
+  "  csrr a4, 0xC20\n  csrr a5, 0xC21\n"                 /* save kernel vl, vtype */
+  "  li   a0, 0x30005000\n  csrr a1, mhartid\n  li a2, 0x900\n  mul a1,a1,a2\n  add a0,a0,a1\n"
+  "  csrr a2, 0xC22\n"                                    /* a2 = vlenb (64) */
+  "  vsetvli x0, a2, e8, m1\n  mv a1, a0\n"               /* byte view; a1 = cursor */
+  "  vse8.v v0,(a1)\n  add a1,a1,a2\n  vse8.v v1,(a1)\n  add a1,a1,a2\n"
+  "  vse8.v v2,(a1)\n  add a1,a1,a2\n  vse8.v v3,(a1)\n  add a1,a1,a2\n"
+  "  vse8.v v4,(a1)\n  add a1,a1,a2\n  vse8.v v5,(a1)\n  add a1,a1,a2\n"
+  "  vse8.v v6,(a1)\n  add a1,a1,a2\n  vse8.v v7,(a1)\n  add a1,a1,a2\n"
+  "  vse8.v v8,(a1)\n  add a1,a1,a2\n  vse8.v v9,(a1)\n  add a1,a1,a2\n"
+  "  vse8.v v10,(a1)\n add a1,a1,a2\n  vse8.v v11,(a1)\n add a1,a1,a2\n"
+  "  vse8.v v12,(a1)\n add a1,a1,a2\n  vse8.v v13,(a1)\n add a1,a1,a2\n"
+  "  vse8.v v14,(a1)\n add a1,a1,a2\n  vse8.v v15,(a1)\n add a1,a1,a2\n"
+  "  vse8.v v16,(a1)\n add a1,a1,a2\n  vse8.v v17,(a1)\n add a1,a1,a2\n"
+  "  vse8.v v18,(a1)\n add a1,a1,a2\n  vse8.v v19,(a1)\n add a1,a1,a2\n"
+  "  vse8.v v20,(a1)\n add a1,a1,a2\n  vse8.v v21,(a1)\n add a1,a1,a2\n"
+  "  vse8.v v22,(a1)\n add a1,a1,a2\n  vse8.v v23,(a1)\n add a1,a1,a2\n"
+  "  vse8.v v24,(a1)\n add a1,a1,a2\n  vse8.v v25,(a1)\n add a1,a1,a2\n"
+  "  vse8.v v26,(a1)\n add a1,a1,a2\n  vse8.v v27,(a1)\n add a1,a1,a2\n"
+  "  vse8.v v28,(a1)\n add a1,a1,a2\n  vse8.v v29,(a1)\n add a1,a1,a2\n"
+  "  vse8.v v30,(a1)\n add a1,a1,a2\n  vse8.v v31,(a1)\n add a1,a1,a2\n"   /* a1 = base+0x800 */
+  "  csrr a3,0x008\n sd a3,0(a1)\n   csrr a3,0x009\n sd a3,8(a1)\n"       /* vstart, vxsat */
+  "  csrr a3,0x00A\n sd a3,16(a1)\n  csrr a3,0x00F\n sd a3,24(a1)\n"      /* vxrm, vcsr   */
+  "  sd a4,32(a1)\n  sd a5,40(a1)\n"                                       /* vl, vtype (saved) */
+  "  csrr a3,0xC22\n sd a3,48(a1)\n  li a3,0x0D0DEC00\n sd a3,56(a1)\n"   /* vlenb, magic */
+  "  vsetvl x0, a4, a5\n  ret\n");                                         /* restore vtype/vl */

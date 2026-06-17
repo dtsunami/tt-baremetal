@@ -19,7 +19,7 @@
   const HARTCOL = ['#ff8a4c', '#4fd6e0', '#b478ff', '#79d479']
 
   let tiles = [], haveRust = true, sel = { tile: 0, hart: 0 }, busy = null
-  let addrHex = '0x30001000', status = 'ready'
+  let addrHex = '0x30008000', status = 'ready'
   let teleByHart = null, prevSlots = [], deployed = {}, deployedAll = {}
   let hartStatus = null, trigger = null, released = false, paused = false, wedged = false
   let hb = { v: null, ts: null, rate: 0 }, regs = null, arch = null, lastDeploy = null, compileOut = null
@@ -28,7 +28,15 @@
   let ws = null, wsAlive = false, reconnectT = null
   let tip = { show: false, x: 0, y: 0, text: '' }
 
-  $: addr = parseInt(addrHex, 16) || 0x30001000
+  // Vectors tab
+  let vecs = null, vecBusy = false
+  // Power tab
+  let power = null, clocks = null, powerT = null
+  // Mailbox tab
+  const VEC_OPS = ['All', 'vadd', 'vsub', 'vxor', 'vsll', 'vmul', 'vmacc', 'vfadd', 'vfmul', 'vfmacc', 'vredsum', 'vrgather', 'vfmacc@m4']
+  let vecOp = 'All', seedHex = '0xAAAAAAAA', rawOp = 4, rawArg0 = 0, cmdLog = []
+
+  $: addr = parseInt(addrHex, 16) || 0x30008000
   $: selTile = tiles.find((t) => t.tile === sel.tile)
   $: tele = teleByHart ? teleByHart[sel.hart] : null
   $: viewDeployed = deployed[sel.hart]
@@ -36,7 +44,10 @@
                       .filter((s) => s.v !== 0 || s.i === 0) : []
 
   onMount(async () => { await loadTiles(); connectWS() })
-  onDestroy(() => { clearTimeout(reconnectT); ws?.close() })
+  onDestroy(() => { clearTimeout(reconnectT); ws?.close(); stopPower() })
+
+  // Poll power/clocks only while the Power tab is active; clear when leaving it.
+  $: if (tab === 'power') { if (!powerT) startPower() } else stopPower()
 
   async function loadTiles() {
     try { const r = await getJSON('/api/l2/tiles'); tiles = r.tiles; haveRust = r.have_rust; busy = r.busy; deployedAll = r.deployed || {} }
@@ -62,6 +73,7 @@
     prevSlots = []; hb = { v: null, ts: null, rate: 0 }
     if (tileChanged) { teleByHart = null; histFrames = []; if (wsAlive) ws.send(JSON.stringify({ tile })); refreshRegs() }
     if (tab === 'arch') loadArch()
+    if (tab === 'vecs') loadVecs()
   }
   const selectTile = (tile) => selectHart(tile, sel.hart)
 
@@ -97,6 +109,37 @@
   async function loadArch() { try { arch = await getJSON(`/api/l2/arch?tile=${sel.tile}&hart=${sel.hart}`) } catch (e) { arch = null } }
   const gprTip = (g) => { const r = REG[g.abi] || REG['x' + g.x]; return r ? `${r.name} (${r.abi}) — ${r.desc}` : `x${g.x}` }
   const csrTip = (n) => CSR[n] ? `${n} — ${CSR[n]}` : n
+
+  // --- Vectors tab ---
+  async function loadVecs() {
+    vecBusy = true
+    try { vecs = await getJSON(`/api/l2/vec?tile=${sel.tile}&hart=${sel.hart}&ew=32`) }
+    catch (e) { vecs = null; status = 'vec: ' + e }
+    finally { vecBusy = false }
+  }
+
+  // --- Power tab ---
+  async function loadPower() {
+    try { [power, clocks] = await Promise.all([getJSON('/api/l2/power'), getJSON('/api/l2/clocks')]) }
+    catch (e) { status = 'power: ' + e }
+  }
+  function startPower() { stopPower(); loadPower(); powerT = setInterval(loadPower, 1000) }
+  function stopPower() { if (powerT) { clearInterval(powerT); powerT = null } }
+
+  // --- Mailbox tab ---
+  async function sendCmd(op, arg0 = 0, arg1 = 0, label = '') {
+    try {
+      const r = await postJSON('/api/l2/cmd', { tile: sel.tile, hart: sel.hart, op, arg0, arg1 })
+      cmdLog = [{ label: label || `op ${op}`, op, arg0, seq: r.seq, ok: r.ok !== false, t: Date.now() }, ...cmdLog].slice(0, 8)
+      status = `cmd ${label || 'op ' + op} → seq ${r.seq ?? '—'}`
+    } catch (e) {
+      cmdLog = [{ label: label || `op ${op}`, op, arg0, seq: '—', ok: false, t: Date.now() }, ...cmdLog].slice(0, 8)
+      status = 'cmd error: ' + e
+    }
+  }
+  const sendClass = () => { const i = VEC_OPS.indexOf(vecOp); sendCmd(10, i <= 0 ? 0xFFFFFFFF : i - 1, 0, `class ${vecOp}`) }
+  const sendSeed = (h) => { const v = parseInt(h, 16); if (Number.isNaN(v)) { status = 'bad seed'; return } sendCmd(11, v >>> 0, 0, `seed ${hex(v)}`) }
+  const sendRaw = () => sendCmd(parseInt(rawOp) || 0, parseInt(rawArg0) || 0, 0, `raw op ${rawOp}`)
   function onTip(e) {
     const el = e.target.closest('[data-tip]')
     if (el) tip = { show: true, x: e.clientX, y: e.clientY, text: el.getAttribute('data-tip') }
@@ -187,7 +230,10 @@
   <button class:on={tab === 'telem'} on:click={() => tab = 'telem'}>Telemetry</button>
   <button class:on={tab === 'plot'} on:click={() => tab = 'plot'}>Plot</button>
   <button class:on={tab === 'arch'} on:click={() => { tab = 'arch'; loadArch() }}>Arch</button>
+  <button class:on={tab === 'vecs'} on:click={() => { tab = 'vecs'; loadVecs() }}>Vectors</button>
   <button class:on={tab === 'regs'} on:click={() => { tab = 'regs'; refreshRegs() }}>Registers</button>
+  <button class:on={tab === 'power'} on:click={() => tab = 'power'}>Power</button>
+  <button class:on={tab === 'cmd'} on:click={() => tab = 'cmd'}>Mailbox</button>
   <button class:on={tab === 'build'} on:click={() => tab = 'build'}>Build</button>
   <button class:on={tab === 'docs'} on:click={() => tab = 'docs'}>Docs</button>
 </div>
@@ -232,7 +278,7 @@
       <table class="regtab">
         <tr><th></th><th>reset_vec</th><th>rnmi_trap</th></tr>
         {#each regs.harts as h}
-          <tr><th>hart {h.hart}</th><td class="num" class:good={h.reset_vec === 0x30001000}>{hex64(h.reset_vec)}</td><td class="num dim">{hex(h.rnmi_trap)}</td></tr>
+          <tr><th>hart {h.hart}</th><td class="num" class:good={h.reset_vec === 0x30008000}>{hex64(h.reset_vec)}</td><td class="num dim">{hex(h.rnmi_trap)}</td></tr>
         {/each}
       </table>
       <p class="dim">reset_vec = where the hart runs; <b class="good">green</b> = redirected into your loaded code.</p>
@@ -278,6 +324,82 @@
       <h5>disassembly <span class="dim">· hover any instruction or register</span></h5>
       <div class="disasm">{@html renderDisasm(compileOut?.disasm || lastDeploy?.disasm || '')}</div>
     {:else}<div class="dim pad">Compile or Deploy to see the image + disassembly here.</div>{/if}
+
+  {:else if tab === 'vecs'}
+    <h4>Vector regs <span class="dim">· tile {sel.tile} hart {sel.hart}</span> <button class="mini" on:click={loadVecs} title="refresh">⟳</button></h4>
+    {#if vecs?.valid}
+      <div class="vechdr">VLEN <b>{vecs.vlen}</b> · ew{vecs.ew} · vtype <b class="good">{vecs.vtype}</b> · vl {vecs.csr?.vl}</div>
+      <div class="vgrid">
+        {#each vecs.vregs as vr}
+          <div class="vrow"><span class="vn">v{vr.v}</span><span class="ve">{#each vr.e32 as e}<span class="vel">{e}</span>{/each}</span></div>
+        {/each}
+      </div>
+      <h5>vector CSRs <span class="dim">· hover for what each holds</span></h5>
+      <table class="archcsr">{#each Object.entries(vecs.csr) as [name, val]}{#if name !== 'magic'}<tr><th data-tip={csrTip(name)}>{name}</th><td class="num">{val}</td></tr>{/if}{/each}</table>
+    {:else if vecBusy}<div class="dim pad">reading vector snapshot…</div>
+    {:else}<div class="dim pad">No vector snapshot — add <code>bh_dump_vec()</code> to your kernel, deploy, then refresh.</div>{/if}
+
+  {:else if tab === 'power'}
+    <h4>Power <span class="dim">· board-level · polling 1 s</span></h4>
+    {#if power}
+      <div class="hbcard">
+        <div class="hbnum">{(power.power_w ?? 0).toFixed(1)} W</div>
+        <div class="pbar"><span style="width:{Math.min(100, 100 * (power.power_w ?? 0) / (power.power_limit_w || 1))}%"></span></div>
+        <div class="hbsub">limit {power.power_limit_w} W{#if power.throttler} · <span class="bad">throttler {power.throttler}</span>{/if}</div>
+      </div>
+      <div class="pwrgrid">
+        <div class="pcell"><span class="pl">current</span><span class="pv">{(power.current_a ?? 0).toFixed(1)} A</span></div>
+        <div class="pcell"><span class="pl">vcore</span><span class="pv">{power.vcore_mv} mV</span></div>
+        <div class="pcell"><span class="pl">asic temp</span><span class="pv">{(power.asic_temp_c ?? 0).toFixed(1)} °C</span></div>
+        <div class="pcell"><span class="pl">fan</span><span class="pv">{power.fan_rpm} rpm</span></div>
+        <div class="pcell"><span class="pl">input power</span><span class="pv">{(power.input_power_w ?? 0).toFixed(1)} W</span></div>
+        <div class="pcell"><span class="pl">aiclk</span><span class="pv">{power.aiclk_mhz} MHz</span></div>
+      </div>
+      <h5>Clocks</h5>
+      {#if clocks}
+        <div class="pwrgrid">
+          <div class="pcell"><span class="pl">CORE l2cpu</span><span class="pv">{(clocks.core_l2cpu_mhz || []).join(' / ')} MHz</span></div>
+          <div class="pcell"><span class="pl">UNCORE axi</span><span class="pv">{clocks.uncore_axi_mhz} MHz</span></div>
+          <div class="pcell"><span class="pl">arc</span><span class="pv">{clocks.arc_mhz} MHz</span></div>
+          <div class="pcell"><span class="pl">Tensix aiclk</span><span class="pv">{clocks.tensix_ai_mhz} MHz</span></div>
+        </div>
+      {:else}<div class="dim pad">waiting for clocks…</div>{/if}
+    {:else}<div class="dim pad">waiting for power telemetry…</div>{/if}
+
+  {:else if tab === 'cmd'}
+    <h4>Mailbox <span class="dim">· tile {sel.tile} hart {sel.hart}</span></h4>
+    <p class="dim">Steers the <b>vec_virus</b> kernel running on this hart (deploy vec_virus first).</p>
+    <div class="cmdrow">
+      <label>instruction class
+        <select bind:value={vecOp}>{#each VEC_OPS as o}<option value={o}>{o}</option>{/each}</select>
+      </label>
+      <button class="run" on:click={sendClass}>Set class</button>
+    </div>
+    <div class="cmdrow">
+      <label>seed <input class="seed" bind:value={seedHex} spellcheck="false" /></label>
+      <button on:click={() => sendSeed(seedHex)}>Set seed</button>
+      <button on:click={() => sendSeed('0xAAAAAAAA')}>AAAA/5555</button>
+      <button on:click={() => sendSeed('0xFFFFFFFF')}>all-ones</button>
+      <button on:click={() => sendSeed('0x0')}>zero</button>
+    </div>
+    <div class="cmdrow">
+      <span class="pl">mutate</span>
+      <button on:click={() => sendCmd(12, 1, 0, 'mutate on')}>Mutate on</button>
+      <button on:click={() => sendCmd(12, 0, 0, 'mutate off')}>Mutate off</button>
+      <span class="sp"></span>
+      <button class="park" on:click={() => sendCmd(4, 0, 0, 'park')}>Park</button>
+      <button class="run" on:click={() => sendCmd(5, 0, 0, 'run')}>Run</button>
+    </div>
+    <h5>raw <span class="dim">· fallback</span></h5>
+    <div class="cmdrow">
+      <label>op <input type="number" bind:value={rawOp} /></label>
+      <label>arg0 <input type="number" bind:value={rawArg0} /></label>
+      <button on:click={sendRaw}>Send</button>
+    </div>
+    {#if cmdLog.length}
+      <h5>recent</h5>
+      <div class="cmdlog">{#each cmdLog as c}<div class="cl" class:bad={!c.ok}><span class="clop">{c.label}</span><span class="dim">arg0 {hex(c.arg0)}</span><span class="clseq">seq {c.seq}</span></div>{/each}</div>
+    {/if}
 
   {:else}
     <DocsPane docsUrl="/api/l2/docs" docUrl={(id) => `/api/l2/doc/${id}`} />
@@ -367,4 +489,37 @@
   details summary { cursor: pointer; color: var(--muted); font-size: 11px; margin: 6px 0; }
   .foot { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--line); font-size: 11px; }
   .conn { color: var(--bad); } .conn.on { color: var(--good); }
+
+  /* Vectors tab */
+  .vechdr { font-size: 11.5px; margin-bottom: 8px; color: var(--muted); }
+  .vechdr b { color: var(--fg); }
+  .vgrid { display: flex; flex-direction: column; gap: 2px; max-height: 420px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; background: #0a0c10; }
+  .vrow { display: flex; align-items: baseline; gap: 8px; font-size: 10.5px; font-variant-numeric: tabular-nums; }
+  .vrow .vn { color: var(--accent); font-weight: 600; width: 30px; flex: none; }
+  .vrow .ve { display: flex; flex-wrap: wrap; gap: 4px; }
+  .vrow .vel { color: var(--fg); font-family: ui-monospace, Menlo, Consolas, monospace; }
+
+  /* Power tab */
+  .pbar { height: 8px; background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; overflow: hidden; margin: 8px 0 6px; }
+  .pbar span { display: block; height: 100%; background: var(--accent); }
+  .pwrgrid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+  .pcell { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); font-variant-numeric: tabular-nums; }
+  .pcell .pl { color: var(--muted); font-size: 11px; }
+  .pcell .pv { color: var(--fg); font-size: 12px; font-weight: 600; }
+
+  /* Mailbox tab */
+  .cmdrow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0; }
+  .cmdrow .sp { flex: 1; }
+  .cmdrow label { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); }
+  .cmdrow .pl { font-size: 11px; color: var(--muted); }
+  .cmdrow select, .cmdrow input { font-family: inherit; font-size: 11px; background: var(--panel2); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 3px 5px; }
+  .cmdrow input[type=number] { width: 70px; } .cmdrow .seed { width: 110px; }
+  .cmdrow button { font-family: inherit; font-size: 11px; background: var(--panel2); color: var(--fg); border: 1px solid var(--line); border-radius: 5px; padding: 3px 9px; cursor: pointer; }
+  .cmdrow .run { background: var(--accent); color: #1a1206; border-color: var(--accent); font-weight: 600; }
+  .cmdrow .park:hover { color: var(--bad); border-color: var(--bad); }
+  .cmdlog { display: flex; flex-direction: column; gap: 2px; }
+  .cl { display: flex; align-items: baseline; gap: 10px; font-size: 11px; padding: 2px 6px; border-radius: 3px; background: var(--panel); font-variant-numeric: tabular-nums; }
+  .cl.bad { color: var(--bad); }
+  .cl .clop { color: var(--fg); width: 130px; flex: none; }
+  .cl .clseq { color: var(--good); margin-left: auto; }
 </style>
