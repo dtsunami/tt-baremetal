@@ -171,15 +171,18 @@ kernel runs.
 
 
 
+## Dependents
+
+  + exalens https://github.com/tenstorrent/tt-exalens
+
+
+
+![alt text](pics/vcix.png)
 
 
 
 
-
-
-
-
-
+## Dependents
 
 
 
