@@ -12,8 +12,11 @@
   import NocObserve from '../lib/observe/NocObserve.svelte'
   import TensixObserve from '../lib/observe/TensixObserve.svelte'
   import HartObserve from '../lib/observe/HartObserve.svelte'
+  import ParamPanel from '../lib/ParamPanel.svelte'
   import { getJSON, postJSON } from '../lib/api.js'
   import { byKey } from '../lib/engines.js'
+
+  let deploying = false
 
   let running = {}          // by_source map from /api/running
   let active = null         // {engine, key, name, sel}
@@ -61,6 +64,29 @@
       saved = content; status = 'saved ' + active.name
     } catch (e) { status = 'save failed: ' + e } finally { saving = false }
   }
+
+  // Deploy from the params panel: compile the editor buffer with the kernel's define-params,
+  // load to the selected hart grouping (deploy_all takes any subset), then fire its live
+  // mailbox ops. (X280 path; the panel only shows for engines with a paramsUrl.)
+  async function onParamDeploy(e) {
+    const { routed, done } = e.detail
+    const report = (m) => { status = m; done?.(m) }
+    if (active?.engine !== 'x280') return
+    if (dirty) await save()
+    const dep = routed.deploy, tile = dep.tile ?? 0
+    const harts = (Array.isArray(dep.hart) ? dep.hart : [dep.hart]).filter((h) => h != null)
+    if (!harts.length) return report('pick at least one hart')
+    deploying = true; status = 'deploying…'
+    try {
+      const r = await postJSON('/api/l2/deploy_all', { tile, harts, content, lang,
+        addr: dep.addr ?? 0x30008000, name: active.name, defines: routed.defines })
+      if (r.ok === false) return report('deploy: ' + (r.error || r.stage || 'failed'))
+      for (const m of routed.mailbox)
+        for (const h of harts)
+          await postJSON('/api/l2/cmd', { tile, hart: h, op: m.op, arg0: m.arg0, arg1: 0 })
+      report(`deployed ${active.name} → tile ${tile} hart ${harts.join(',')}`); afterRun()
+    } catch (ex) { report('deploy failed: ' + ex) } finally { deploying = false }
+  }
 </script>
 
 <LabShell storeKey="devbrowser.layout">
@@ -74,6 +100,9 @@
       <span class="sp"></span>
       <button on:click={save} disabled={!dirty || saving}>Save</button>
     </div>
+    {#if active && eng?.paramsUrl}
+      <ParamPanel {eng} fileKey={active.key} busy={deploying} on:deploy={onParamDeploy} />
+    {/if}
     <div class="code-wrap"><CodeEditor bind:this={editor} {lang} onChange={(t) => content = t} onSave={save} /></div>
     <div class="statusbar"><span class="st">{status}</span></div>
   </svelte:fragment>

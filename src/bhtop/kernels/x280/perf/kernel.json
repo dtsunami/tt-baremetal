@@ -1,0 +1,11 @@
+{
+  "title": "perf",
+  "lang": "c",
+  "engine": "x280",
+  "doc": "surface this hart's cycle + instructions-retired counters every loop, so the",
+  "sources": [
+    "perf.c"
+  ],
+  "params": [],
+  "src_map": null
+}

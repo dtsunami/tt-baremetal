@@ -1,0 +1,11 @@
+{
+  "title": "vector",
+  "lang": "c",
+  "engine": "x280",
+  "doc": "the X280's RVV (512-bit RISC-V Vector) unit, on bare metal",
+  "sources": [
+    "vector.c"
+  ],
+  "params": [],
+  "src_map": null
+}

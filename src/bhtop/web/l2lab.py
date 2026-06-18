@@ -14,26 +14,34 @@ import shutil
 import struct
 import tempfile
 
-from . import labkit
+from . import labkit, kerntree, kernmeta, kernconf
 from ..l2cpu import toolchain, regmap
 
 PKG = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../bhtop
-EXAMPLES_DIR = os.path.join(PKG, "l2cpu", "examples")
-WORKDIR = os.path.expanduser("~/bhtop/l2cpu_kernels")
+EXAMPLES_DIR = os.path.join(PKG, "l2cpu", "examples")               # legacy flat sources (CLI/scripts)
+KERN_CANON = os.path.join(PKG, "kernels", "x280")                   # canonical kernel folders (tracked)
+WORKDIR = os.path.expanduser("~/bhtop/kernels/x280")                # working tree (gitignored, per-user)
 EDIT_EXT = {".c", ".s", ".S", ".rs"}
 
 
-# ---- workspace ----------------------------------------------------------------------
+# ---- workspace (a tree of per-kernel folders, seeded from the canonical kernels) -----
 def _ensure_workspace():
-    """Create the workspace and seed it from the bundled examples. Additive: copies any
-    bundled example not already present (so new examples show up) without touching edits."""
+    """Create the working tree and seed it from the canonical kernel folders. Additive:
+    copies any canonical kernel folder not already present (so new bundled kernels show up)
+    without touching the user's edits or user-created folders."""
     os.makedirs(WORKDIR, exist_ok=True)
-    for n in os.listdir(EXAMPLES_DIR):
-        if os.path.splitext(n)[1] in EDIT_EXT:
+    if os.path.isdir(KERN_CANON):
+        for n in os.listdir(KERN_CANON):
+            src = os.path.join(KERN_CANON, n)
             dst = os.path.join(WORKDIR, n)
-            if not os.path.exists(dst):
-                shutil.copy2(os.path.join(EXAMPLES_DIR, n), dst)
+            if os.path.isdir(src) and not os.path.exists(dst):
+                shutil.copytree(src, dst)
     return WORKDIR
+
+
+def tree():
+    """Nested folder listing for the device-browser tree (replaces the flat files() list)."""
+    return kerntree.list_tree(_ensure_workspace(), EDIT_EXT, toolchain.detect_lang)
 
 
 def _safe(name):
@@ -43,16 +51,108 @@ def _safe(name):
 
 
 def files():
-    """List workspace kernels (name, lang, bytes), C first then asm/Rust."""
+    """Flat recursive list of workspace source files (key = workspace-relative path). Kept for
+    back-compat / the /api/l2/files endpoint; the browser uses tree()."""
     root = _ensure_workspace()
     out = []
-    for n in sorted(os.listdir(root)):
-        full = os.path.join(root, n)
-        if os.path.isfile(full) and os.path.splitext(n)[1] in EDIT_EXT:
-            out.append({"name": n, "lang": toolchain.detect_lang(n),
-                        "bytes": os.path.getsize(full)})
-    out.sort(key=lambda f: ({"c": 0, "asm": 1, "rust": 2}.get(f["lang"], 3), f["name"]))
+    for dirpath, dirs, names in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in kerntree.HIDDEN_DIRS]
+        for n in sorted(names):
+            if os.path.splitext(n)[1] in EDIT_EXT:
+                rel = os.path.relpath(os.path.join(dirpath, n), root)
+                out.append({"name": rel, "key": rel, "lang": toolchain.detect_lang(n),
+                            "bytes": os.path.getsize(os.path.join(dirpath, n))})
+    out.sort(key=lambda f: f["key"])
     return out
+
+
+# ---- per-kernel meta-params (kernel.json) + folder ops + regenerate ------------------
+def _kernel_dir_and_srcs(key):
+    root = _ensure_workspace()
+    _safe(key)                                              # guard the key (traversal + ext)
+    kdir = kerntree.kernel_dir_for(root, key)
+    srcs = [n for n in sorted(os.listdir(kdir))
+            if os.path.isfile(os.path.join(kdir, n)) and os.path.splitext(n)[1] in EDIT_EXT]
+    return root, kdir, srcs
+
+
+def kernel_meta(key):
+    """The kernel.json (param schema + defaults) governing a selected file `key`, plus where
+    its entry source lives. Synthesizes a default (deploy knobs only) when there's no sidecar."""
+    root, kdir, srcs = _kernel_dir_and_srcs(key)
+    lang = toolchain.detect_lang(srcs[0]) if srcs else "c"
+    meta = kernmeta.load(kdir, sources=srcs, lang=lang)
+    rel = os.path.relpath(kdir, root)
+    entry = os.path.normpath(os.path.join(rel, (meta.get("sources") or srcs or [key])[0]))
+    return {"kernel": rel, "entry": entry, "meta": meta}
+
+
+def config_get(key):
+    """Raw kernel.json text for the JSON editor (auto-creates a default if the folder has none)."""
+    root, kdir, srcs = _kernel_dir_and_srcs(key)
+    lang = toolchain.detect_lang(srcs[0]) if srcs else "c"
+    return {"kernel": os.path.relpath(kdir, root), **kernconf.raw_get(kdir, srcs, lang, "x280")}
+
+
+def config_put(key, text):
+    """Write kernel.json from the editor (validates JSON + schema)."""
+    root, kdir, srcs = _kernel_dir_and_srcs(key)
+    return kernconf.raw_put(kdir, text)
+
+
+def save_params(key, values):
+    """Persist the user's chosen values as the kernel's new defaults (writes kernel.json in
+    the working folder; per-user, the working tree is gitignored)."""
+    root, kdir, srcs = _kernel_dir_and_srcs(key)
+    if os.path.realpath(kdir) == os.path.realpath(root):
+        raise ValueError("file is not inside a kernel folder; create one to save params")
+    lang = toolchain.detect_lang(srcs[0]) if srcs else "c"
+    meta = kernmeta.load(kdir, sources=srcs, lang=lang)
+    for p in meta.get("params", []):
+        if p["name"] in (values or {}):
+            p["default"] = kernmeta.coerce(p, values[p["name"]])
+    kernmeta.save(kdir, meta)
+    return {"ok": True, "kernel": os.path.relpath(kdir, root)}
+
+
+def _sibling(src, name):
+    """A new folder path: `name` as a sibling of `src` (a bare basename), or a full
+    workspace-relative path if it contains a slash."""
+    return name if "/" in name else os.path.join(os.path.dirname(src), name)
+
+
+def folder_new(rel):
+    return {"ok": True, "path": kerntree.folder_new(_ensure_workspace(), rel)}
+
+
+def folder_dup(src, name):
+    return {"ok": True, "path": kerntree.folder_dup(_ensure_workspace(), src, _sibling(src, name))}
+
+
+def folder_rename(src, name):
+    return {"ok": True, "path": kerntree.folder_rename(_ensure_workspace(), src, _sibling(src, name))}
+
+
+def folder_delete(rel):
+    return kerntree.folder_delete(_ensure_workspace(), rel)
+
+
+def regenerate():
+    """Re-seed bundled kernels: overwrite each canonical kernel folder into the working tree
+    (restores pristine example sources + kernel.json), PRESERVING user-created folders."""
+    root = _ensure_workspace()
+    refreshed = []
+    if os.path.isdir(KERN_CANON):
+        for n in sorted(os.listdir(KERN_CANON)):
+            src = os.path.join(KERN_CANON, n)
+            if not os.path.isdir(src):
+                continue
+            dst = os.path.join(root, n)
+            if os.path.isdir(dst):
+                shutil.rmtree(dst)
+            shutil.copytree(src, dst)
+            refreshed.append(n)
+    return {"ok": True, "refreshed": refreshed}
 
 
 def read_file(name):
@@ -70,12 +170,14 @@ def write_file(name, content):
 
 
 def new_file(name, lang="c"):
-    """Create a starter kernel of the given language if it doesn't exist."""
-    if "." not in name:
+    """Create a starter kernel of the given language if it doesn't exist. `name` may be nested
+    in a folder (e.g. 'myk/myk.c'); parent folders are created as needed."""
+    if "." not in os.path.basename(name):
         name += {"c": ".c", "asm": ".s", "rust": ".rs"}.get(lang, ".c")
     full = _safe(name)
     if os.path.exists(full):
         raise ValueError(f"{name} already exists")
+    os.makedirs(os.path.dirname(full), exist_ok=True)
     with open(full, "w", encoding="utf-8") as fh:
         fh.write(_STARTERS.get(toolchain.detect_lang(name), _STARTERS["c"]))
     return read_file(name)
@@ -111,23 +213,24 @@ def rename_file(src, dst_name):
 
 
 # ---- compile (no device) ------------------------------------------------------------
-def compile_kernel(content, lang, addr):
+def compile_kernel(content, lang, addr, defines=None):
     """Compile editor `content` to a flat image. Returns words/bytes + disasm on success,
-    or parsed compiler errors on failure — never raises (so the UI can show them inline)."""
+    or parsed compiler errors on failure — never raises (so the UI can show them inline).
+    `defines` (name->int|hex) are the kernel's define-kind params, injected over the map."""
     ext = {"c": ".c", "asm": ".s", "rust": ".rs"}.get(lang, ".c")
     with tempfile.TemporaryDirectory() as d:
         src = os.path.join(d, "kernel" + ext)
         with open(src, "w") as fh:
             fh.write(content)
         try:
-            words = toolchain.compile_source(src, base=addr, lang=lang)
+            words = toolchain.compile_source(src, base=addr, lang=lang, defines=defines)
         except toolchain.ToolError as e:
             msg = str(e)
             errs = [{**err, "file": os.path.basename(err["file"])}
                     for err in labkit.parse_compiler_errors(msg)]
             return {"ok": False, "error": msg, "errors": errs}
         try:
-            dis = toolchain.disasm(src, base=addr, lang=lang)
+            dis = toolchain.disasm(src, base=addr, lang=lang, defines=defines)
         except Exception:
             dis = ""
         return {"ok": True, "words": words, "bytes": len(words) * 4, "addr": addr,

@@ -1,0 +1,11 @@
+{
+  "title": "hwinfo",
+  "lang": "c",
+  "engine": "x280",
+  "doc": "read real x280 hardware registers and surface them, using the harness",
+  "sources": [
+    "hwinfo.c"
+  ],
+  "params": [],
+  "src_map": null
+}

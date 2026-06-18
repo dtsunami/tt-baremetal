@@ -1,0 +1,11 @@
+{
+  "title": "dumpstate",
+  "lang": "c",
+  "engine": "x280",
+  "doc": "snapshot this hart's WHOLE register file to DRAM every loop, so the",
+  "sources": [
+    "dumpstate.c"
+  ],
+  "params": [],
+  "src_map": null
+}

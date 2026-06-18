@@ -153,6 +153,11 @@ class DeviceManager:
         self._last_frame = frame
         self.noc_chan.broadcast(frame)
 
+    def last_frame(self):
+        """The most recent sampled telemetry frame — for HTTP polling clients (the poll loop
+        keeps sampling the device at `hz` regardless of how clients read it)."""
+        return self._last_frame
+
     async def subscribe(self):
         return await self.noc_chan.subscribe()
 
@@ -343,6 +348,26 @@ class DeviceManager:
         from . import tlab
         return await asyncio.to_thread(tlab.files, example)
 
+    async def tlab_tree(self):
+        from . import tlab
+        return await asyncio.to_thread(tlab.tree)
+
+    async def tlab_params(self, key):
+        from . import tlab
+        return await asyncio.to_thread(tlab.params, key)
+
+    async def tlab_config_get(self, key):
+        from . import tlab
+        return await asyncio.to_thread(tlab.config_get, key)
+
+    async def tlab_config_put(self, key, text):
+        from . import tlab
+        return await asyncio.to_thread(tlab.config_put, key, text)
+
+    async def tlab_restore(self):
+        from . import tlab
+        return await asyncio.to_thread(tlab.restore)
+
     async def tlab_read(self, path):
         from . import tlab
         return await asyncio.to_thread(tlab.read_file, path)
@@ -396,6 +421,26 @@ class DeviceManager:
     async def lab_files(self, project):
         from . import lab
         return await asyncio.to_thread(lab.files, project)
+
+    async def lab_tree(self):
+        from . import lab
+        return await asyncio.to_thread(lab.tree)
+
+    async def lab_params(self, key):
+        from . import lab
+        return await asyncio.to_thread(lab.params, key)
+
+    async def lab_config_get(self, key):
+        from . import lab
+        return await asyncio.to_thread(lab.config_get, key)
+
+    async def lab_config_put(self, key, text):
+        from . import lab
+        return await asyncio.to_thread(lab.config_put, key, text)
+
+    async def lab_restore(self):
+        from . import lab
+        return await asyncio.to_thread(lab.restore)
 
     async def lab_read(self, path):
         from . import lab
@@ -520,7 +565,7 @@ class DeviceManager:
     def l2_bringup_last(self):
         return {"running": self._l2_busy, "result": self._last_bringup}
 
-    async def l2_deploy(self, tile, hart, content, lang, addr, name=""):
+    async def l2_deploy(self, tile, hart, content, lang, addr, name="", defines=None):
         """Compile (off the device thread) then load+redirect (on it). One call =
         the whole develop→deploy step. Returns the verified seize result and records
         which kernel now runs on this hart (so the cockpit can show it)."""
@@ -530,7 +575,7 @@ class DeviceManager:
             return {"ok": False, "error": "a tt-metal kernel owns the device"}
         if self._l2_busy:
             return {"ok": False, "error": f"{self._l2_busy} in progress"}
-        comp = await asyncio.to_thread(l2lab.compile_kernel, content, lang, addr)
+        comp = await asyncio.to_thread(l2lab.compile_kernel, content, lang, addr, defines)
         if not comp.get("ok"):
             return {"ok": False, "stage": "compile", **comp}
 
@@ -554,19 +599,20 @@ class DeviceManager:
         """{hart: {name,lang,seized}} for the harts we've deployed to on this tile."""
         return {h: v for (t, h), v in self._l2_deployed.items() if t == tile}
 
-    async def l2_deploy_all(self, tile, content, lang, addr, name=""):
-        """Compile once, load the SAME kernel onto all 4 harts of a tile (each gets its
-        own telemetry window). Great for running a probe on every hart at once."""
+    async def l2_deploy_all(self, tile, content, lang, addr, name="", defines=None, harts=None):
+        """Compile once, load the SAME kernel onto a GROUPING of harts on a tile (each gets its
+        own telemetry window). `harts` is any subset (None = all 4)."""
         if self.reset_needed or self.mode == "busy" or self._l2_busy:
             return {"ok": False, "error": "device not ready (reset/busy/bringup)"}
-        comp = await asyncio.to_thread(l2lab.compile_kernel, content, lang, addr)
+        sel = [h for h in (harts if harts else range(HARTS)) if 0 <= h < HARTS] or list(range(HARTS))
+        comp = await asyncio.to_thread(l2lab.compile_kernel, content, lang, addr, defines)
         if not comp.get("ok"):
             return {"ok": False, "stage": "compile", **comp}
 
         def _all():
             l2 = self._l2_get()
             out = []
-            for h in range(HARTS):
+            for h in sel:
                 l2.wr(tile, TELE_ADDR + h * TELE_STRIDE, [0] * TELE_SLOTS)   # fresh window
                 try:
                     r = l2.load(tile, h, list(comp["words"]), addr=addr, redirect=True)
@@ -641,6 +687,36 @@ class DeviceManager:
         return await self._run(lambda: self._l2_get().set_core_freq(mhz))
 
     # ---- L2 workspace + docs + compile (filesystem/CPU — off the device thread) ----
+    async def l2_tree(self):
+        return await asyncio.to_thread(l2lab.tree)
+
+    async def l2_params(self, key):
+        return await asyncio.to_thread(l2lab.kernel_meta, key)
+
+    async def l2_save_params(self, key, values):
+        return await asyncio.to_thread(l2lab.save_params, key, values)
+
+    async def l2_config_get(self, key):
+        return await asyncio.to_thread(l2lab.config_get, key)
+
+    async def l2_config_put(self, key, text):
+        return await asyncio.to_thread(l2lab.config_put, key, text)
+
+    async def l2_folder_new(self, path):
+        return await asyncio.to_thread(l2lab.folder_new, path)
+
+    async def l2_folder_dup(self, src, name):
+        return await asyncio.to_thread(l2lab.folder_dup, src, name)
+
+    async def l2_folder_rename(self, src, name):
+        return await asyncio.to_thread(l2lab.folder_rename, src, name)
+
+    async def l2_folder_delete(self, path):
+        return await asyncio.to_thread(l2lab.folder_delete, path)
+
+    async def l2_regenerate(self):
+        return await asyncio.to_thread(l2lab.regenerate)
+
     async def l2_files(self):
         return await asyncio.to_thread(l2lab.files)
 
@@ -667,8 +743,8 @@ class DeviceManager:
     async def l2_delete(self, name):
         return await asyncio.to_thread(l2lab.delete_file, name)
 
-    async def l2_compile(self, content, lang, addr):
-        return await asyncio.to_thread(l2lab.compile_kernel, content, lang, addr)
+    async def l2_compile(self, content, lang, addr, defines=None):
+        return await asyncio.to_thread(l2lab.compile_kernel, content, lang, addr, defines)
 
     async def l2_docs_index(self):
         return await asyncio.to_thread(l2lab.docs_index)

@@ -1,0 +1,11 @@
+{
+  "title": "heartbeat",
+  "lang": "asm",
+  "engine": "x280",
+  "doc": "minimal x280 bare-metal: bump THIS hart's telemetry slot 0 forever",
+  "sources": [
+    "heartbeat.s"
+  ],
+  "params": [],
+  "src_map": null
+}

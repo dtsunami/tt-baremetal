@@ -5,19 +5,29 @@ import { getJSON } from './api.js'
 export const floorplan = writable(null)
 getJSON('/api/floorplan').then((fp) => floorplan.set(fp)).catch((e) => console.error(e))
 
-// Latest live telemetry frame, pushed over WebSocket at the poll rate (~2 Hz).
+// Latest live telemetry frame. Polled over plain HTTP at ~2 Hz (the backend poll loop samples
+// the device at `hz` and caches the frame, so this just reads the cache). Polling instead of a
+// WebSocket: no persistent socket, no reconnect/half-open states, no "reconnecting…" — a missed
+// poll just shows disconnected for one tick and self-heals on the next.
 export const frame = writable(null)
 export const connected = writable(false)
 
-function connectWS() {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-  const ws = new WebSocket(`${proto}://${location.host}/ws/telemetry`)
-  ws.onopen = () => connected.set(true)
-  ws.onmessage = (e) => frame.set(JSON.parse(e.data))
-  ws.onclose = () => {
+const POLL_MS = 500   // ~2 Hz, matches the server sample rate
+let inflight = false
+
+async function poll() {
+  if (inflight) return                       // never stack requests if one is slow
+  inflight = true
+  try {
+    const r = await fetch('/api/telemetry')
+    if (!r.ok) throw new Error(r.status)
+    frame.set(await r.json())
+    connected.set(true)
+  } catch {
     connected.set(false)
-    setTimeout(connectWS, 1500) // auto-reconnect
+  } finally {
+    inflight = false
   }
-  ws.onerror = () => ws.close()
 }
-connectWS()
+poll()
+setInterval(poll, POLL_MS)

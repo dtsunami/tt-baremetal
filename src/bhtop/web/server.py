@@ -19,6 +19,7 @@ from .schemas import (InjectRequest, KernelRunRequest, LabWriteRequest,
                       LabPathRequest, LabBuildRequest, L2DeployRequest,
                       L2CompileRequest, L2TileRequest, L2WriteRequest,
                       L2NewRequest, L2PokeRequest, L2CommandRequest, L2FreqRequest,
+                      L2FolderRequest, L2ParamsRequest, KernelConfigRequest,
                       TlabRunRequest, CopyRequest)
 from ..patterns import PATTERN_INFO
 
@@ -130,6 +131,14 @@ async def running():
     return await dm.running()
 
 
+@app.get("/api/telemetry")
+async def telemetry():
+    """Latest sampled NoC frame, for HTTP polling clients (simpler + more robust than the WS:
+    the poll loop already samples the device at `hz` and caches the frame, so this just returns
+    the cache — no per-request device touch). The /ws/telemetry WebSocket remains for push use."""
+    return dm.last_frame() or {"ts": 0, "mode": dm.mode, "tiles": {}, "dram": {}}
+
+
 # ---- UI defaults: persist the chip-view style/calibration to a tracked repo file so a good
 # pathfinding layout can be committed to git and shared (vs. per-browser localStorage) --------
 import json
@@ -161,6 +170,40 @@ async def tlab_file_duplicate(req: CopyRequest):
 @app.get("/api/tlab/files")
 async def tlab_files(example: str):
     return await dm.tlab_files(example)
+
+
+@app.get("/api/tlab/tree")
+async def tlab_tree():
+    return await dm.tlab_tree()
+
+
+@app.get("/api/tlab/params")
+async def tlab_params(key: str):
+    try:
+        return await dm.tlab_params(key)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/tlab/config")
+async def tlab_config(key: str):
+    try:
+        return await dm.tlab_config_get(key)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/tlab/config")
+async def tlab_config_save(req: KernelConfigRequest):
+    try:
+        return await dm.tlab_config_put(req.key, req.text)
+    except (ValueError, OSError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/tlab/restore")
+async def tlab_restore():
+    return await dm.tlab_restore()
 
 
 @app.get("/api/tlab/file")
@@ -209,6 +252,40 @@ async def lab_projects():
 @app.get("/api/lab/files")
 async def lab_files(project: str):
     return await dm.lab_files(project)
+
+
+@app.get("/api/lab/tree")
+async def lab_tree():
+    return await dm.lab_tree()
+
+
+@app.get("/api/lab/params")
+async def lab_params(key: str):
+    try:
+        return await dm.lab_params(key)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/lab/config")
+async def lab_config(key: str):
+    try:
+        return await dm.lab_config_get(key)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/lab/config")
+async def lab_config_save(req: KernelConfigRequest):
+    try:
+        return await dm.lab_config_put(req.key, req.text)
+    except (ValueError, OSError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/lab/restore")
+async def lab_restore():
+    return await dm.lab_restore()
 
 
 @app.get("/api/lab/file")
@@ -333,6 +410,80 @@ async def l2_files():
     return await dm.l2_files()
 
 
+@app.get("/api/l2/tree")
+async def l2_tree():
+    return await dm.l2_tree()
+
+
+@app.get("/api/l2/params")
+async def l2_params(key: str):
+    try:
+        return await dm.l2_params(key)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/l2/params")
+async def l2_params_save(req: L2ParamsRequest):
+    try:
+        return await dm.l2_save_params(req.key, req.values)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/l2/config")
+async def l2_config(key: str):
+    try:
+        return await dm.l2_config_get(key)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/l2/config")
+async def l2_config_save(req: KernelConfigRequest):
+    try:
+        return await dm.l2_config_put(req.key, req.text)
+    except (ValueError, OSError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/l2/folder/new")
+async def l2_folder_new(req: L2FolderRequest):
+    try:
+        return await dm.l2_folder_new(req.path)
+    except (ValueError, OSError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/l2/folder/duplicate")
+async def l2_folder_duplicate(req: CopyRequest):
+    try:
+        return await dm.l2_folder_dup(req.src, req.name)
+    except (ValueError, OSError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/l2/folder/rename")
+async def l2_folder_rename(req: CopyRequest):
+    try:
+        return await dm.l2_folder_rename(req.src, req.name)
+    except (ValueError, OSError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/l2/folder/delete")
+async def l2_folder_delete(req: L2FolderRequest):
+    try:
+        return await dm.l2_folder_delete(req.path)
+    except (ValueError, OSError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/l2/regenerate")
+async def l2_regenerate():
+    return await dm.l2_regenerate()
+
+
 @app.get("/api/l2/examples")
 async def l2_examples():
     return await dm.l2_examples()
@@ -388,7 +539,7 @@ async def l2_file_rename(req: CopyRequest):
 
 @app.post("/api/l2/compile")
 async def l2_compile(req: L2CompileRequest):
-    return await dm.l2_compile(req.content, req.lang, req.addr)
+    return await dm.l2_compile(req.content, req.lang, req.addr, req.defines)
 
 
 @app.post("/api/l2/bringup")
@@ -403,12 +554,12 @@ async def l2_bringup_last():
 
 @app.post("/api/l2/deploy")
 async def l2_deploy(req: L2DeployRequest):
-    return await dm.l2_deploy(req.tile, req.hart, req.content, req.lang, req.addr, req.name)
+    return await dm.l2_deploy(req.tile, req.hart, req.content, req.lang, req.addr, req.name, req.defines)
 
 
 @app.post("/api/l2/deploy_all")
 async def l2_deploy_all(req: L2DeployRequest):
-    return await dm.l2_deploy_all(req.tile, req.content, req.lang, req.addr, req.name)
+    return await dm.l2_deploy_all(req.tile, req.content, req.lang, req.addr, req.name, req.defines, req.harts)
 
 
 @app.post("/api/l2/park_all")

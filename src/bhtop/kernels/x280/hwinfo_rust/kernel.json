@@ -1,0 +1,11 @@
+{
+  "title": "hwinfo",
+  "lang": "rust",
+  "engine": "x280",
+  "doc": "same as hwinfo.c, in Rust, using the harness. You write only kmain();",
+  "sources": [
+    "hwinfo.rs"
+  ],
+  "params": [],
+  "src_map": null
+}

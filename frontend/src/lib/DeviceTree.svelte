@@ -1,25 +1,28 @@
-<!-- DeviceTree — the unified device-hierarchy browser (left pane). Files-only sections
-     NOC / X280 / TENSIX (+ DRAM / ETH shown "soon"). Per-section, capability-aware file ops
-     (new/dup/rename/delete where the engine supports them; duplicate-only + an explanatory
-     note where edits are in-place). Files whose source is live show a running ● (matched by
-     basename against /api/running). Selecting a file dispatches `select` {engine, key, name}. -->
+<!-- DeviceTree — the unified device-hierarchy browser (left pane). Engines with a `treeUrl`
+     (X280) render a hierarchical FOLDER browser (KernelTree) with new-folder / duplicate-folder
+     / regenerate; engines still on a `selUrl` (NOC / TENSIX) keep the project/example dropdown
+     + flat list. Capability-aware ops throughout. Files whose source is live show a running ●
+     (matched by basename against /api/running). Selecting a file dispatches `select`. -->
 <script>
   import { onMount, createEventDispatcher } from 'svelte'
   import { getJSON, postJSON } from './api.js'
   import { ENGINES, SOON, langOf } from './engines.js'
+  import KernelTree from './KernelTree.svelte'
 
   export let running = {}      // by_source map from /api/running: basename -> running build
   export let activeKey = null  // currently-open file key (for highlight)
 
   const dispatch = createEventDispatcher()
 
-  // per-section UI state: {open, sel, options, files, available, error, loading}
+  // per-section UI state: {open, sel, options, files, tree, treeOpen, available, error, loading}
   let st = {}
-  ENGINES.forEach((e) => st[e.key] = { open: true, sel: null, options: [], files: [], available: true, error: null, loading: false })
+  ENGINES.forEach((e) => st[e.key] = { open: false, sel: null, options: [], files: [],
+                                       tree: [], treeOpen: {}, available: true, error: null, loading: false })
 
   onMount(() => { ENGINES.forEach(initSection) })
 
   async function initSection(eng) {
+    if (eng.treeUrl) return loadTree(eng)
     const s = st[eng.key]
     if (eng.selUrl) {
       try {
@@ -38,6 +41,17 @@
     await loadFiles(eng)
   }
 
+  async function loadTree(eng) {
+    const s = st[eng.key]
+    s.loading = true; st = st
+    try {
+      const d = await getJSON(eng.treeUrl)
+      s.available = d.available !== false
+      s.tree = d.tree || []
+    } catch (e) { s.tree = []; s.available = false; s.error = String(e) }
+    s.loading = false; st = st
+  }
+
   async function loadFiles(eng) {
     const s = st[eng.key]
     if (s.available === false) { s.files = []; st = st; return }
@@ -46,35 +60,87 @@
     s.loading = false; st = st
   }
 
+  const reload = (eng) => eng.treeUrl ? loadTree(eng) : loadFiles(eng)
   const toggle = (k) => { st[k].open = !st[k].open; st = st }
   async function changeSel(eng) { dispatch('selchange', { engine: eng.key, sel: st[eng.key].sel }); await loadFiles(eng) }
   const isRunning = (eng, f) => !!running[eng.nameOf(f)]
-  const select = (eng, f) => dispatch('select', { engine: eng.key, key: eng.keyOf(f), name: eng.nameOf(f), sel: st[eng.key].sel })
+  // for the folder browser the run-target (project/example) is the top-level folder of the key;
+  // the flat (legacy) path still carries the dropdown selection.
+  const selectKey = (eng, key, name) => dispatch('select',
+    { engine: eng.key, key, name, sel: eng.treeUrl ? key.split('/')[0] : st[eng.key].sel })
+  const select = (eng, f) => selectKey(eng, eng.keyOf(f), eng.nameOf(f))
 
-  // ---- capability-aware file ops (prompt-driven, like the per-lab UX) ----
+  // ---- file ops (shared by flat + tree; key/name come from the node or list row) ----
+  async function fileDup(eng, key, name) {
+    const dst = prompt('Duplicate to (new name):', name.replace(/(\.[^.]+)$/, '_v2$1'))
+    if (!dst) return
+    try { const r = await postJSON(eng.dupUrl, { src: key, name: dst }); await reload(eng); selectKey(eng, r.key ?? r.path ?? r.name, r.name ?? dst) }
+    catch (e) { alert('duplicate: ' + e) }
+  }
+  async function fileRename(eng, key, name) {
+    const dst = prompt('Rename to:', name)
+    if (!dst || dst === name) return
+    try { const r = await postJSON(eng.renameUrl, { src: key, name: dst }); await reload(eng); selectKey(eng, r.key ?? r.name, r.name ?? dst) }
+    catch (e) { alert('rename: ' + e) }
+  }
+  async function fileDelete(eng, key, name) {
+    if (!confirm(`Delete ${name}? This removes it from the workspace.`)) return
+    try { await postJSON(eng.delUrl, { name: key, content: '' }); if (activeKey === key) dispatch('select', { engine: null }); await reload(eng) }
+    catch (e) { alert('delete: ' + e) }
+  }
+
+  // ---- flat (legacy) op handlers ----
   async function opNew(eng) {
     const name = prompt('New kernel name (e.g. blink.c / scan.rs / spin.s):')
     if (!name) return
-    try { const f = await postJSON(eng.newUrl, { name, lang: langOf(name) }); await loadFiles(eng); dispatch('select', { engine: eng.key, key: f.name, name: f.name, sel: st[eng.key].sel }) }
+    try { const f = await postJSON(eng.newUrl, { name, lang: langOf(name) }); await reload(eng); selectKey(eng, f.key ?? f.name, f.name) }
     catch (e) { alert('new: ' + e) }
   }
-  async function opDup(eng, f) {
-    const base = eng.nameOf(f)
-    const name = prompt('Duplicate to (new name):', base.replace(/(\.[^.]+)$/, '_v2$1'))
+
+  // ---- tree-mode handlers (callback props for KernelTree) ----
+  const treeSelect = (eng) => (n) => selectKey(eng, n.key, n.name)
+  const treeFileOp = (eng) => (kind, n) =>
+    kind === 'dup' ? fileDup(eng, n.key, n.name)
+    : kind === 'rename' ? fileRename(eng, n.key, n.name)
+    : fileDelete(eng, n.key, n.name)
+  const treeFolderOp = (eng) => async (kind, dir) => {
+    try {
+      if (kind === 'newfile') {
+        const name = prompt(`New file in ${dir.name}/ (e.g. kernel.c / probe.rs):`)
+        if (!name) return
+        const f = await postJSON(eng.newUrl, { name: `${dir.key}/${name}`, lang: langOf(name) })
+        st[eng.key].treeOpen[dir.key] = true; await reload(eng); selectKey(eng, f.key ?? f.name, f.name)
+      } else if (kind === 'dup') {
+        const name = prompt('Duplicate folder to (new name):', dir.name + '_v2')
+        if (!name) return
+        await postJSON(eng.folderDupUrl, { src: dir.key, name }); await reload(eng)
+      } else if (kind === 'rename') {
+        const name = prompt('Rename folder to:', dir.name)
+        if (!name || name === dir.name) return
+        await postJSON(eng.folderRenameUrl, { src: dir.key, name }); await reload(eng)
+      } else if (kind === 'delete') {
+        if (!confirm(`Delete folder ${dir.name}/ and everything in it?`)) return
+        await postJSON(eng.folderDelUrl, { path: dir.key }); await reload(eng)
+      }
+    } catch (e) { alert(kind + ' folder: ' + e) }
+  }
+  async function newFolder(eng) {
+    const name = prompt('New folder name:')
     if (!name) return
-    try { const r = await postJSON(eng.dupUrl, { src: eng.keyOf(f), name }); await loadFiles(eng); dispatch('select', { engine: eng.key, key: r.path ?? r.name, name: r.name ?? r.path, sel: st[eng.key].sel }) }
-    catch (e) { alert('duplicate: ' + e) }
+    try { await postJSON(eng.folderNewUrl, { path: name }); await reload(eng) }
+    catch (e) { alert('new folder: ' + e) }
   }
-  async function opRename(eng, f) {
-    const name = prompt('Rename to:', eng.nameOf(f))
-    if (!name || name === eng.nameOf(f)) return
-    try { const r = await postJSON(eng.renameUrl, { src: eng.keyOf(f), name }); await loadFiles(eng); dispatch('select', { engine: eng.key, key: r.name, name: r.name, sel: st[eng.key].sel }) }
-    catch (e) { alert('rename: ' + e) }
-  }
-  async function opDelete(eng, f) {
-    if (!confirm(`Delete ${eng.nameOf(f)}? This removes it from the workspace.`)) return
-    try { await postJSON(eng.delUrl, { name: eng.keyOf(f), content: '' }); if (activeKey === eng.keyOf(f)) dispatch('select', { engine: null }); await loadFiles(eng) }
-    catch (e) { alert('delete: ' + e) }
+  async function regenerate(eng) {
+    const reverts = eng.regenUrl.includes('restore')   // noc/tensix revert .orig; x280 re-seeds canonical
+    const msg = reverts
+      ? 'Revert ALL your in-place edits in this engine to the shipped originals? This discards your changes.'
+      : 'Restore the bundled example kernels to pristine? Your own folders are kept.'
+    if (!confirm(msg)) return
+    try {
+      const r = await postJSON(eng.regenUrl, {}); await reload(eng); dispatch('select', { engine: null })
+      const n = r.refreshed?.length ?? r.reverted ?? 0
+      alert(reverts ? `reverted ${n} edited file(s) to original` : `restored ${n} example kernels`)
+    } catch (e) { alert('restore: ' + e) }
   }
 </script>
 
@@ -98,13 +164,23 @@
 
         <!-- capability-aware op toolbar -->
         <div class="ops">
-          {#if eng.caps.new}<button class="op" on:click={() => opNew(eng)} title="new kernel">＋ new</button>{/if}
+          {#if eng.caps.new && !eng.treeUrl}<button class="op" on:click={() => opNew(eng)} title="new kernel">＋ new</button>{/if}
+          {#if eng.caps.folder}<button class="op" on:click={() => newFolder(eng)} title="new top-level folder">＋ folder</button>{/if}
+          {#if eng.caps.regen}<button class="op danger" on:click={() => regenerate(eng)} title="restore to pristine — destructive, discards edits">↻ {eng.regenLabel || 'restore'}</button>{/if}
           {#if eng.inPlaceNote}<span class="op note" title={eng.inPlaceNote}>edits in place ⓘ</span>{/if}
         </div>
 
         {#if s.error}<div class="err">{s.error}</div>{/if}
         {#if s.available === false}
           <div class="dim pad">unavailable — {eng.key === 'x280' ? 'no L2CPU workspace' : 'tt-metal not found'}</div>
+        {:else if eng.treeUrl}
+          {#if !s.tree.length}<div class="dim pad">{s.loading ? 'loading…' : 'no kernels'}</div>
+          {:else}
+            <div class="kt-wrap">
+              <KernelTree nodes={s.tree} {eng} {activeKey} {running} open={st[eng.key].treeOpen}
+                          onSelect={treeSelect(eng)} onFileOp={treeFileOp(eng)} onFolderOp={treeFolderOp(eng)} />
+            </div>
+          {/if}
         {:else if !s.files.length}
           <div class="dim pad">{s.loading ? 'loading…' : 'no files'}</div>
         {:else}
@@ -117,9 +193,9 @@
                   <span class="role {eng.roleOf(f)}">{eng.roleOf(f)}</span>
                 </button>
                 <span class="rowops">
-                  {#if eng.caps.duplicate}<button class="mini" on:click|stopPropagation={() => opDup(eng, f)} title="duplicate">⧉</button>{/if}
-                  {#if eng.caps.rename}<button class="mini" on:click|stopPropagation={() => opRename(eng, f)} title="rename">✎</button>{/if}
-                  {#if eng.caps.delete}<button class="mini del" on:click|stopPropagation={() => opDelete(eng, f)} title="delete">🗑</button>{/if}
+                  {#if eng.caps.duplicate}<button class="mini" on:click|stopPropagation={() => fileDup(eng, eng.keyOf(f), eng.nameOf(f))} title="duplicate">⧉</button>{/if}
+                  {#if eng.caps.rename}<button class="mini" on:click|stopPropagation={() => fileRename(eng, eng.keyOf(f), eng.nameOf(f))} title="rename">✎</button>{/if}
+                  {#if eng.caps.delete}<button class="mini del" on:click|stopPropagation={() => fileDelete(eng, eng.keyOf(f), eng.nameOf(f))} title="delete">🗑</button>{/if}
                 </span>
               </li>
             {/each}
@@ -142,8 +218,8 @@
 <style>
   .tree { overflow: auto; flex: 1; min-height: 0; padding: 6px 0; }
   .sect { border-bottom: 1px solid var(--line); padding: 4px 0 8px; }
-  .head { display: flex; align-items: center; gap: 6px; width: 100%; background: none; border: none; color: var(--fg); cursor: pointer; font-family: inherit; font-size: 12px; padding: 6px 10px; text-align: left; }
-  .caret { color: var(--muted); font-size: 9px; transition: transform 0.12s; display: inline-block; }
+  .head { display: flex; align-items: center; gap: 6px; width: 100%; background: none; border: none; color: var(--fg); cursor: pointer; font-family: inherit; font-size: 12.5px; padding: 7px 10px; text-align: left; }
+  .caret { color: var(--fg); font-size: 12px; transition: transform 0.12s; display: inline-block; width: 12px; }
   .caret.open { transform: rotate(90deg); }
   .eg { font-weight: 700; letter-spacing: 0.03em; }
   .eg.noc { color: var(--noc0); } .eg.x280 { color: var(--accent); } .eg.tensix { color: var(--noc1); }
@@ -157,7 +233,10 @@
   .op { font-family: inherit; font-size: 10.5px; background: var(--panel2); color: var(--accent); border: 1px solid var(--accent); border-radius: 5px; padding: 2px 7px; cursor: pointer; }
   .op:hover { background: rgba(255,138,76,0.12); }
   .op.note { color: var(--muted); border-color: var(--line); cursor: help; }
+  .op.danger { color: var(--bad); border-color: var(--bad); }
+  .op.danger:hover { background: rgba(255,80,80,0.14); }
 
+  .kt-wrap { padding: 0 6px; }
   ul { list-style: none; margin: 0; padding: 0 6px; }
   .row { display: flex; align-items: center; border-radius: 5px; }
   .row:hover { background: var(--panel2); }

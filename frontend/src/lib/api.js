@@ -25,6 +25,43 @@ export function fmtBW(b) {
 
 export const tileKey = (noc0) => `${noc0[0]},${noc0[1]}`
 
+// ---- per-kernel meta-params: client mirror of web/kernmeta.coerce + route ----
+function coerceOne(t, v) {
+  if (t === 'int') return parseInt(v, 10)
+  if (t === 'hex') return typeof v === 'number' ? v : parseInt(String(v))   // parseInt auto-detects 0x
+  if (t === 'bool') return v === true || String(v).toLowerCase() === 'true' || v === 1 || v === '1'
+  return v   // enum | str (kept as label/string)
+}
+
+export function coerceParam(p, v) {
+  if (v === undefined || v === null) v = p.default
+  if (p.multi) {
+    const seq = Array.isArray(v) ? v : v === '' || v == null ? [] : [v]
+    return seq.map((x) => coerceOne(p.type, x))
+  }
+  return coerceOne(p.type, v)
+}
+
+function arg0Of(p, v) {
+  const c = coerceParam(p, v)
+  if (p.type === 'enum') { const i = (p.choices || []).indexOf(c); return p.vals ? Number(p.vals[i]) : i }
+  if (p.type === 'bool') return c ? 1 : 0
+  return Number(c)
+}
+
+// Split {name: value} into the three application buckets (mirrors kernmeta.route):
+//   {defines:{NAME:int}, deploy:{name:value}, mailbox:[{name,op,arg0}]}
+export function routeParams(params, values) {
+  const out = { defines: {}, deploy: {}, mailbox: [] }
+  for (const p of params || []) {
+    const raw = values && p.name in values ? values[p.name] : p.default
+    if (p.kind === 'define') out.defines[p.name] = coerceParam({ ...p, type: 'hex' }, raw)
+    else if (p.kind === 'deploy') out.deploy[p.name] = coerceParam(p, raw)
+    else out.mailbox.push({ name: p.name, op: p.op, arg0: arg0Of(p, raw) })
+  }
+  return out
+}
+
 // Poll an async-job `*/last` endpoint ({running, result}) until it finishes, then call
 // onDone(d). Replaces the per-lab setTimeout-recursion pollers. Returns a cancel fn.
 export function pollJob(url, onDone, interval = 2000) {

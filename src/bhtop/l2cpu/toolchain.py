@@ -70,11 +70,11 @@ def _rust_env(mapf):
     return {**os.environ, "BH_RT": RT, "BH_MAP": mapf}
 
 
-def _write_rust_map(d, base):
-    """Emit the canonical map (regmap.harness_defines) as Rust consts for bh.rs to include!.
+def _write_rust_map(d, base, defines=None):
+    """Emit the canonical map (+ per-kernel `defines`) as Rust consts for bh.rs to include!.
     Keeps Rust kernels in lockstep with the map with nothing to hand-sync."""
     body = "// generated from regmap.py per build — do not edit; the lab injects this\n"
-    body += "".join(f"pub const {k}: usize = {v:#x};\n" for k, v in harness_defines(base).items())
+    body += "".join(f"pub const {k}: usize = {v:#x};\n" for k, v in _defmap(base, defines).items())
     p = os.path.join(d, "bh_map.rs")
     with open(p, "w") as fh:
         fh.write(body)
@@ -96,8 +96,20 @@ def _objcopy(elf, out):
     _run([tool("objcopy"), "-O", "binary", elf, out])
 
 
-def _gcc_cmd(elf, base, lang, path):
-    defs = harness_defines(base)                             # canonical map (single source: regmap.py)
+def _defmap(base, defines=None):
+    """The canonical map (regmap.harness_defines) merged with optional per-kernel `defines`,
+    kernel values winning. Values are coerced to int so a kernel.json may pass 256 or "0xAA"
+    alike. These are injected as -D / --defsym / rust consts — see _gcc_cmd / _write_rust_map.
+    NOTE: a per-kernel define only takes effect if the source leaves it #ifndef-guarded (or
+    undefined); an unconditional `#define ITERS 256` in the source would override the -D."""
+    m = dict(harness_defines(base))
+    for k, v in (defines or {}).items():
+        m[k] = v if isinstance(v, int) else int(str(v), 0)
+    return m
+
+
+def _gcc_cmd(elf, base, lang, path, defines=None):
+    defs = _defmap(base, defines)                            # canonical map + per-kernel overrides
     cmd = [tool("gcc"), "-march=rv64gc", "-mabi=lp64d", "-nostdlib", "-nostartfiles",
            "-fno-pic", f"-T{LINK_LD}", f"-Wl,--defsym=LOAD_ADDR={base:#x}",
            "-Wl,--no-relax", "-o", elf]
@@ -119,39 +131,40 @@ def _rustc_cmd(elf, base, path):
             "-C", "link-arg=--no-relax", "-o", elf, path]
 
 
-def _build_elf(path, elf, base, lang):
+def _build_elf(path, elf, base, lang, defines=None):
     """Compile any supported language to a position-fixed ELF at `elf`."""
     if lang not in ("asm", "c", "rust"):
         raise ToolError(f"unknown language for {path} (use .s/.c/.rs or pass lang=)")
     if lang in ("asm", "c"):
         if not have_gcc():
             raise ToolError(f"sfpi gcc not found at {SFPI} — is tt-metal present?")
-        _run(_gcc_cmd(elf, base, lang, path))
+        _run(_gcc_cmd(elf, base, lang, path, defines))
     else:
         if not have_rust():
             raise ToolError(
                 "Rust bare-metal toolchain not ready. Install:\n"
                 "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y\n"
                 "  . \"$HOME/.cargo/env\" && rustup target add " + RUST_TARGET)
-        mapf = _write_rust_map(os.path.dirname(elf), base)   # canonical map for bh.rs to include!
+        mapf = _write_rust_map(os.path.dirname(elf), base, defines)   # canonical map + overrides for bh.rs
         _run(_rustc_cmd(elf, base, path), env=_rust_env(mapf))
 
 
-def compile_source(path, base=DEFAULT_BASE, lang=None):
-    """Compile `path` to a flat image linked at `base`. Returns list[u32 words]."""
+def compile_source(path, base=DEFAULT_BASE, lang=None, defines=None):
+    """Compile `path` to a flat image linked at `base`. Returns list[u32 words].
+    `defines` (name->int|hex-str) are injected on top of the canonical map (kernel wins)."""
     lang = lang or detect_lang(path)
     with tempfile.TemporaryDirectory() as d:
         elf = os.path.join(d, "a.elf")
         binf = os.path.join(d, "a.bin")
-        _build_elf(path, elf, base, lang)
+        _build_elf(path, elf, base, lang, defines)
         _objcopy(elf, binf)
         return _to_words(binf)
 
 
-def disasm(path, base=DEFAULT_BASE, lang=None):
+def disasm(path, base=DEFAULT_BASE, lang=None, defines=None):
     """Compile and return objdump disassembly (works for asm/C/Rust alike)."""
     lang = lang or detect_lang(path)
     with tempfile.TemporaryDirectory() as d:
         elf = os.path.join(d, "a.elf")
-        _build_elf(path, elf, base, lang)
+        _build_elf(path, elf, base, lang, defines)
         return _run([tool("objdump"), "-d", elf], check=False)[1]

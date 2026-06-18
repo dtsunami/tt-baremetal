@@ -1,0 +1,11 @@
+{
+  "title": "scan",
+  "lang": "c",
+  "engine": "x280",
+  "doc": "walk a block of DRAM, XOR-checksum it, and report. A real loop over memory",
+  "sources": [
+    "scan.c"
+  ],
+  "params": [],
+  "src_map": null
+}

@@ -1,0 +1,73 @@
+{
+  "title": "vec_virus",
+  "lang": "c",
+  "engine": "x280",
+  "doc": "RVV (x280 512-bit vector) power-virus + per-instruction max-IPC probe,",
+  "sources": [
+    "vec_virus.c"
+  ],
+  "params": [
+    {
+      "name": "ITERS",
+      "kind": "define",
+      "type": "int",
+      "default": 256,
+      "desc": "inner loop trip count per class (compile-time; bigger = longer measurement window)"
+    },
+    {
+      "name": "class",
+      "kind": "mailbox",
+      "op": 10,
+      "type": "enum",
+      "choices": [
+        "all",
+        "vadd",
+        "vsub",
+        "vxor",
+        "vsll",
+        "vmul",
+        "vmacc",
+        "vfadd",
+        "vfmul",
+        "vfmacc",
+        "vredsum",
+        "vrgather",
+        "vfmacc@m4"
+      ],
+      "vals": [
+        4294967295,
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11
+      ],
+      "default": "all",
+      "desc": "instruction class to focus all power on (live; 'all' sweeps the table)"
+    },
+    {
+      "name": "seed",
+      "kind": "mailbox",
+      "op": 11,
+      "type": "hex",
+      "default": "0xAAAAAAAA",
+      "desc": "operand seed A (seedB=~A); dials the toggle pattern / switching activity (live)"
+    },
+    {
+      "name": "mutate",
+      "kind": "mailbox",
+      "op": 12,
+      "type": "bool",
+      "default": false,
+      "desc": "auto-randomize the seed every pass (xorshift) instead of holding it fixed (live)"
+    }
+  ],
+  "src_map": null
+}

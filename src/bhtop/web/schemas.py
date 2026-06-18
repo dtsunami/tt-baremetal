@@ -33,17 +33,20 @@ class LabBuildRequest(BaseModel):
 # ---- L2CPU cockpit ----
 class L2DeployRequest(BaseModel):
     tile: int                 # 0..3
-    hart: int                 # 0..3
+    hart: int = 0             # single-hart deploy (/api/l2/deploy)
+    harts: list[int] | None = None  # subset for deploy_all (None = all 4); any grouping
     content: str              # kernel source (the editor buffer)
     lang: str = "c"           # c | asm | rust
     addr: int = 0x30008000    # load address (user-code window, above the data blocks)
     name: str = ""            # source filename, recorded so the UI shows what's on each hart
+    defines: dict = {}        # define-kind meta-params injected at compile (name -> int|hex)
 
 
 class L2CompileRequest(BaseModel):
     content: str
     lang: str = "c"
     addr: int = 0x30008000
+    defines: dict = {}        # define-kind meta-params injected at compile (name -> int|hex)
 
 
 class L2CommandRequest(BaseModel):
@@ -88,3 +91,18 @@ class TlabRunRequest(BaseModel):
 class CopyRequest(BaseModel):
     src: str                  # existing file (path or name) to duplicate
     name: str                 # new file name for the copy (a fresh variation)
+
+
+# ---- folder browser + per-kernel meta-params ----
+class L2FolderRequest(BaseModel):
+    path: str                 # workspace-relative folder path (new / delete)
+
+
+class L2ParamsRequest(BaseModel):
+    key: str                  # a file key inside the kernel folder whose kernel.json to update
+    values: dict = {}         # {param_name: value} to persist as the kernel's new defaults
+
+
+class KernelConfigRequest(BaseModel):
+    key: str                  # a file key inside the kernel (resolves to its kernel.json)
+    text: str                 # raw kernel.json text from the JSON editor (validated on write)

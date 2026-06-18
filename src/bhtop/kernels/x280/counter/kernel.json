@@ -1,0 +1,11 @@
+{
+  "title": "counter",
+  "lang": "c",
+  "engine": "x280",
+  "doc": "minimal x280 bare-metal in C. Just write main(); crt0 handles _start",
+  "sources": [
+    "counter.c"
+  ],
+  "params": [],
+  "src_map": null
+}

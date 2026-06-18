@@ -1,0 +1,44 @@
+{
+  "title": "mailbox",
+  "lang": "c",
+  "engine": "x280",
+  "doc": "DRAM-triggered live register update on the x280 (poll / keypress)",
+  "sources": [
+    "mailbox.c"
+  ],
+  "params": [
+    {
+      "name": "set_csr",
+      "kind": "mailbox",
+      "op": 1,
+      "type": "int",
+      "default": 0,
+      "desc": "write this value into mscratch, live (echoed in telemetry slot 4)"
+    },
+    {
+      "name": "set_vreg",
+      "kind": "mailbox",
+      "op": 2,
+      "type": "int",
+      "default": 0,
+      "desc": "broadcast this value into vector reg v16, live (echoed in slot 5)"
+    },
+    {
+      "name": "vtype",
+      "kind": "mailbox",
+      "op": 3,
+      "type": "enum",
+      "choices": [
+        "e32/m1",
+        "e32/m4"
+      ],
+      "vals": [
+        0,
+        1
+      ],
+      "default": "e32/m1",
+      "desc": "re-vsetvli to this SEW/LMUL, live (vl echoed in slot 7)"
+    }
+  ],
+  "src_map": null
+}

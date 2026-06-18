@@ -10,6 +10,9 @@ import os
 import shutil
 
 from . import labkit
+from . import kerntree
+from . import kernconf
+from . import kernmeta
 from .. import metal
 
 EDIT_EXT = {".cpp", ".hpp", ".h", ".cc"}
@@ -48,6 +51,50 @@ def _role(rel):
     if "/kernels/" in p:
         return "dataflow"
     return "host"
+
+
+def tree():
+    """Nested folder listing of programming_examples (each example as a folder, compute/dataflow
+    kernels nested) for the device-browser folder view. Edits stay in place (JIT reads these
+    exact paths on the next Run). `available:false` when tt-metal isn't present."""
+    return kerntree.list_tree(examples_root(), EDIT_EXT, lambda n: "cpp", _role,
+                              is_kernel=lambda rel: "/" not in rel)   # each example = a kernel
+
+
+# ---- per-kernel config (kernel.json overlay) + restore --------------------------------
+def params(key):
+    """The kernel.json (params + defaults) for the example the selected file belongs to. Stored
+    as a bhtop overlay (no source copy); synthesizes an empty default if absent."""
+    kdir, top = kernconf.overlay_kdir("tensix", key)
+    meta = kernmeta.load(kdir, sources=[os.path.basename(key)] if key else [], lang="cpp", engine="tensix")
+    return {"kernel": top, "entry": key, "meta": meta}
+
+
+def config_get(key):
+    kdir, top = kernconf.overlay_kdir("tensix", key)
+    return {"kernel": top, **kernconf.raw_get(kdir, [os.path.basename(key)] if key else [], "cpp", "tensix")}
+
+
+def config_put(key, text):
+    kdir, _ = kernconf.overlay_kdir("tensix", key)
+    return kernconf.raw_put(kdir, text)
+
+
+def restore():
+    """Revert every edited example source to its shipped original (.orig). Destructive: discards
+    your in-place TENSIX edits and restores the pristine programming_examples sources."""
+    root = examples_root()
+    if not root:
+        return {"ok": False, "error": "tt-metal not found"}
+    n = 0
+    for dp, _, names in os.walk(root):
+        for f in names:
+            if f.endswith(".orig"):
+                live = os.path.join(dp, f[:-5])
+                if os.path.isfile(live):
+                    shutil.copy2(os.path.join(dp, f), live)
+                    n += 1
+    return {"ok": True, "reverted": n}
 
 
 def files(example):

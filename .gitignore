@@ -17,3 +17,8 @@ generated/
 # L2CPU kernel workspace — a private scratch space seeded from src/bhtop/l2cpu/examples/ on
 # first run (l2lab._ensure_workspace); edits here are local experiments, not shipped sources
 l2cpu_kernels/
+
+# Working kernel tree — per-user copy seeded/regenerated from the canonical, tracked kernels
+# under src/bhtop/kernels/ (l2lab._ensure_workspace). Root-anchored so it never matches the
+# canonical src/bhtop/kernels/. Holds edits + per-kernel build/ artifacts; not shipped.
+/kernels/

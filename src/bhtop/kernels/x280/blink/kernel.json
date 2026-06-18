@@ -1,0 +1,11 @@
+{
+  "title": "blink",
+  "lang": "c",
+  "engine": "x280",
+  "doc": "the simplest \"hello\": flip slot 1 between 0 and 1 at a visible rate, so you",
+  "sources": [
+    "blink.c"
+  ],
+  "params": [],
+  "src_map": null
+}

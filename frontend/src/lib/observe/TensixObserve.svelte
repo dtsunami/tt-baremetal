@@ -15,10 +15,18 @@
   const dispatch = createEventDispatcher()
 
   let running = false, result = null, status = 'ready', cancelRun = null
-  let tab = 'occ', deployed = {}, disasm = null
+  let tab = 'occ', deployed = {}, disasm = null, examples = []
   let tip = { show: false, x: 0, y: 0, text: '' }
 
-  $: example = active?.sel || ''
+  // Map the selected file (folder-browser key like 'matmul/matmul_single_core/kernels/…') to its
+  // runnable example binary: the example whose short-name is a path segment of the key (handles
+  // nested examples). Falls back to the selector hint for the legacy/flat path.
+  function pickExample(key, sel, exs) {
+    if (key) { const segs = key.split('/'); const hit = exs.find((e) => segs.includes(short(e))); if (hit) return hit }
+    if (sel && exs.includes(sel)) return sel
+    return sel ? (sel.startsWith('metal_example_') ? sel : 'metal_example_' + sel) : ''
+  }
+  $: example = pickExample(active?.key, active?.sel, examples)
   $: mode = $frame?.mode ?? '—'
   $: busy = mode === 'busy'
   $: resetNeeded = $frame?.reset_needed
@@ -39,6 +47,7 @@
 
   onMount(async () => {
     await loadStatus()
+    try { examples = (await getJSON('/api/tlab/examples')).examples || [] } catch (e) {}
     try { const d = await getJSON('/api/tlab/last'); result = d.result; if (d.running) { running = true; poll() } } catch (e) {}
   })
   onDestroy(() => cancelRun?.())
