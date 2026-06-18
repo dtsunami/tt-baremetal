@@ -364,6 +364,10 @@ class DeviceManager:
         from . import tlab
         return await asyncio.to_thread(tlab.config_put, key, text)
 
+    async def tlab_merge_params(self, key):
+        from . import tlab
+        return await asyncio.to_thread(tlab.merge_params, key)
+
     async def tlab_restore(self):
         from . import tlab
         return await asyncio.to_thread(tlab.restore)
@@ -437,6 +441,10 @@ class DeviceManager:
     async def lab_config_put(self, key, text):
         from . import lab
         return await asyncio.to_thread(lab.config_put, key, text)
+
+    async def lab_merge_params(self, key):
+        from . import lab
+        return await asyncio.to_thread(lab.merge_params, key)
 
     async def lab_restore(self):
         from . import lab
@@ -701,6 +709,9 @@ class DeviceManager:
 
     async def l2_config_put(self, key, text):
         return await asyncio.to_thread(l2lab.config_put, key, text)
+
+    async def l2_merge_params(self, key):
+        return await asyncio.to_thread(l2lab.merge_params, key)
 
     async def l2_folder_new(self, path):
         return await asyncio.to_thread(l2lab.folder_new, path)

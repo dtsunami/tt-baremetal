@@ -25,6 +25,7 @@ from . import labkit
 from . import kerntree
 from . import kernconf
 from . import kernmeta
+from . import kernparse
 from .. import metal
 
 EDIT_EXT = {".cpp", ".hpp", ".h", ".cc"}
@@ -110,6 +111,32 @@ def config_get(key):
 def config_put(key, text):
     kdir, _ = kernconf.overlay_kdir("noc", key)
     return kernconf.raw_put(kdir, text)
+
+
+def merge_params(key, dry_run=False):
+    """Parse the project's tt-metal sources (device kernels + host .cpp) and merge the discovered
+    params (rtarg / ctarg / define) into the bhtop overlay kernel.json. Idempotent; preserves
+    edits. Returns {kernel, added:[names], count}."""
+    root = dm_root()
+    if not root:
+        raise ValueError("tt-metal data_movement tree not found")
+    kdir, top = kernconf.overlay_kdir("noc", key)
+    device, host = kerntree.gather_metal_sources(os.path.join(root, top), EDIT_EXT)
+    meta = kernmeta.load(kdir, sources=[os.path.basename(key)] if key else [], lang="cpp", engine="noc")
+    added = kernparse.merge(meta, kernparse.parse_metal(device, host))
+    if not dry_run:
+        os.makedirs(kdir, exist_ok=True)
+        kernmeta.save(kdir, meta)
+    return {"kernel": top, "added": [p["name"] for p in added], "count": len(added)}
+
+
+def merge_all(dry_run=False):
+    """Merge every discovered data_movement project. Returns a per-project summary list."""
+    root = dm_root()
+    if not root:
+        return {"available": False, "root": None, "results": []}
+    results = [merge_params(p["name"], dry_run=dry_run) for p in projects().get("projects", [])]
+    return {"available": True, "root": root, "results": results}
 
 
 def restore():

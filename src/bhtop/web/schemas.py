@@ -106,3 +106,7 @@ class L2ParamsRequest(BaseModel):
 class KernelConfigRequest(BaseModel):
     key: str                  # a file key inside the kernel (resolves to its kernel.json)
     text: str                 # raw kernel.json text from the JSON editor (validated on write)
+
+
+class KernelMergeRequest(BaseModel):
+    key: str                  # a file key inside the kernel; parse its source(s) + merge params

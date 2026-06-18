@@ -14,7 +14,7 @@ import shutil
 import struct
 import tempfile
 
-from . import labkit, kerntree, kernmeta, kernconf
+from . import labkit, kerntree, kernmeta, kernconf, kernparse
 from ..l2cpu import toolchain, regmap
 
 PKG = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../bhtop
@@ -113,6 +113,67 @@ def save_params(key, values):
             p["default"] = kernmeta.coerce(p, values[p["name"]])
     kernmeta.save(kdir, meta)
     return {"ok": True, "kernel": os.path.relpath(kdir, root)}
+
+
+def _canon_defines():
+    """Names never emitted as discovered `define` params: the canonical regmap (the harness map,
+    injected from regmap.py) plus the reserved deploy-knob names (tile/hart/addr) — a `#define addr`
+    would otherwise collide with the deploy 'addr' and shadow it in kernmeta.route()."""
+    return set(regmap.harness_defines(regmap.CODE_ADDR)) | {p["name"] for p in kernmeta.DEFAULT_DEPLOY}
+
+
+def _read_srcs(kdir, srcs):
+    """{filename: text} for a kernel folder's source files (read errors skipped)."""
+    out = {}
+    for n in srcs:
+        try:
+            with open(os.path.join(kdir, n), encoding="utf-8", errors="replace") as fh:
+                out[n] = fh.read()
+        except OSError:
+            pass
+    return out
+
+
+def merge_params(key, dry_run=False):
+    """Parse the kernel's x280 source(s) and merge the discovered params (define + documented
+    mailbox ops) into its kernel.json, populating the param schema without clobbering edits.
+    Idempotent. Returns {kernel, added:[names], count}."""
+    root, kdir, srcs = _kernel_dir_and_srcs(key)
+    if os.path.realpath(kdir) == os.path.realpath(root):
+        raise ValueError("file is not inside a kernel folder; create one to merge params")
+    lang = toolchain.detect_lang(srcs[0]) if srcs else "c"
+    meta = kernmeta.load(kdir, sources=srcs, lang=lang)
+    discovered = kernparse.parse_x280(_read_srcs(kdir, srcs), skip_defines=_canon_defines())
+    added = kernparse.merge(meta, discovered)
+    if not dry_run:
+        kernmeta.save(kdir, meta)
+    return {"kernel": os.path.relpath(kdir, root), "added": [p["name"] for p in added],
+            "count": len(added)}
+
+
+def merge_all(root=None, dry_run=False):
+    """Merge every kernel folder under `root` (default = the working tree). Pass the canonical
+    KERN_CANON to populate the tracked, shipped sidecars. Returns a per-kernel summary list."""
+    base = root or _ensure_workspace()
+    skip = _canon_defines()
+    results = []
+    if not os.path.isdir(base):
+        return {"available": False, "root": base, "results": []}
+    for n in sorted(os.listdir(base)):
+        kdir = os.path.join(base, n)
+        if not os.path.isdir(kdir) or n in kerntree.HIDDEN_DIRS:
+            continue
+        srcs = [f for f in sorted(os.listdir(kdir))
+                if os.path.isfile(os.path.join(kdir, f)) and os.path.splitext(f)[1] in EDIT_EXT]
+        if not srcs:
+            continue
+        lang = toolchain.detect_lang(srcs[0])
+        meta = kernmeta.load(kdir, sources=srcs, lang=lang)
+        added = kernparse.merge(meta, kernparse.parse_x280(_read_srcs(kdir, srcs), skip_defines=skip))
+        if added and not dry_run:
+            kernmeta.save(kdir, meta)
+        results.append({"kernel": n, "added": [p["name"] for p in added], "count": len(added)})
+    return {"available": True, "root": base, "results": results}
 
 
 def _sibling(src, name):

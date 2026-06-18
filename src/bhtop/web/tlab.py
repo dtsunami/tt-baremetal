@@ -13,6 +13,7 @@ from . import labkit
 from . import kerntree
 from . import kernconf
 from . import kernmeta
+from . import kernparse
 from .. import metal
 
 EDIT_EXT = {".cpp", ".hpp", ".h", ".cc"}
@@ -62,22 +63,88 @@ def tree():
 
 
 # ---- per-kernel config (kernel.json overlay) + restore --------------------------------
+def _example_rel(key):
+    """The example directory governing a selected file `key` (the nearest ancestor that owns a
+    kernels/ subdir, within examples_root), relative to root — so nested programming_examples
+    (matmul/matmul_single_core, profiler/...) each key their OWN overlay instead of sharing the
+    top folder's. Falls back to the first path segment when none is found."""
+    root = examples_root()
+    top = (key or "").split("/")[0]
+    if not root or not top:
+        return top
+    rroot = os.path.realpath(root)
+    d = os.path.dirname(os.path.realpath(os.path.join(rroot, key or "")))
+    while os.path.commonpath([d, rroot]) == rroot and d != rroot:
+        if os.path.isdir(os.path.join(d, "kernels")):
+            return os.path.relpath(d, rroot)
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return top
+
+
 def params(key):
     """The kernel.json (params + defaults) for the example the selected file belongs to. Stored
     as a bhtop overlay (no source copy); synthesizes an empty default if absent."""
-    kdir, top = kernconf.overlay_kdir("tensix", key)
+    kdir, rel = kernconf.overlay_kdir_rel("tensix", _example_rel(key))
     meta = kernmeta.load(kdir, sources=[os.path.basename(key)] if key else [], lang="cpp", engine="tensix")
-    return {"kernel": top, "entry": key, "meta": meta}
+    return {"kernel": rel, "entry": key, "meta": meta}
 
 
 def config_get(key):
-    kdir, top = kernconf.overlay_kdir("tensix", key)
-    return {"kernel": top, **kernconf.raw_get(kdir, [os.path.basename(key)] if key else [], "cpp", "tensix")}
+    kdir, rel = kernconf.overlay_kdir_rel("tensix", _example_rel(key))
+    return {"kernel": rel, **kernconf.raw_get(kdir, [os.path.basename(key)] if key else [], "cpp", "tensix")}
 
 
 def config_put(key, text):
-    kdir, _ = kernconf.overlay_kdir("tensix", key)
+    kdir, _ = kernconf.overlay_kdir_rel("tensix", _example_rel(key))
     return kernconf.raw_put(kdir, text)
+
+
+def merge_params(key, dry_run=False):
+    """Parse the example's tt-metal sources (compute/dataflow kernels + host .cpp) and merge the
+    discovered params (rtarg / ctarg / define) into the bhtop overlay kernel.json. Idempotent;
+    preserves edits. Returns {kernel, added:[names], count}."""
+    root = examples_root()
+    if not root:
+        raise ValueError("tt-metal programming_examples not found")
+    rel = _example_rel(key)
+    kdir, _ = kernconf.overlay_kdir_rel("tensix", rel)
+    device, host = kerntree.gather_metal_sources(os.path.join(root, rel), EDIT_EXT)
+    meta = kernmeta.load(kdir, sources=[os.path.basename(key)] if key else [], lang="cpp", engine="tensix")
+    added = kernparse.merge(meta, kernparse.parse_metal(device, host))
+    if not dry_run:
+        os.makedirs(kdir, exist_ok=True)
+        kernmeta.save(kdir, meta)
+    return {"kernel": rel, "added": [p["name"] for p in added], "count": len(added)}
+
+
+def merge_all(dry_run=False):
+    """Merge every programming_example that ships device kernels — each example keyed to its OWN
+    overlay (nested sub-examples are resolved separately). Returns a per-example summary."""
+    root = examples_root()
+    if not root:
+        return {"available": False, "root": None, "results": []}
+    results = []
+    for exdir in _example_dirs(root):
+        rel = os.path.relpath(exdir, root)
+        results.append(merge_params(os.path.join(rel, "x.cpp"), dry_run=dry_run))
+    return {"available": True, "root": root, "results": results}
+
+
+def _example_dirs(root):
+    """Every directory that directly owns a kernels/ subdir (= a runnable example), nested or flat.
+    Does not descend into kernels/ itself."""
+    out = []
+    for dp, dirs, _ in os.walk(root):
+        if dp != root and os.path.basename(dp) in kerntree.HIDDEN_DIRS:
+            dirs[:] = []
+            continue
+        if "kernels" in dirs:
+            out.append(dp)
+            dirs[:] = [d for d in dirs if d != "kernels"]
+    return sorted(out)
 
 
 def restore():

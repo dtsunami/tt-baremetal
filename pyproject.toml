@@ -29,6 +29,7 @@ bhtop-inject = "bhtop.inject_app:main"
 bhtop-metal = "bhtop.metal:main"
 bhtop-web = "bhtop.web.server:main"
 bhtop-l2cpu = "bhtop.l2cpu.cli:main"
+bhtop-kern = "bhtop.kerncli:main"
 
 [project.urls]
 Homepage = "https://github.com/tenstorrent/tt-isa-documentation"

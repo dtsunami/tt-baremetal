@@ -57,7 +57,8 @@ export function routeParams(params, values) {
     const raw = values && p.name in values ? values[p.name] : p.default
     if (p.kind === 'define') out.defines[p.name] = coerceParam({ ...p, type: 'hex' }, raw)
     else if (p.kind === 'deploy') out.deploy[p.name] = coerceParam(p, raw)
-    else out.mailbox.push({ name: p.name, op: p.op, arg0: arg0Of(p, raw) })
+    else if (p.kind === 'mailbox') out.mailbox.push({ name: p.name, op: p.op, arg0: arg0Of(p, raw) })
+    // rtarg / ctarg are tt-metal host-owned (documentation-only) — not routed (mirrors kernmeta.route)
   }
   return out
 }

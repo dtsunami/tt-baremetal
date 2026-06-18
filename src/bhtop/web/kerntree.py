@@ -9,11 +9,39 @@ backups, and per-kernel build/ artifact dirs.
 """
 import os
 import shutil
+from collections import Counter
 
 from . import labkit
 from . import kernmeta
 
 HIDDEN_DIRS = {"build", "__pycache__", ".git"}
+
+
+def gather_metal_sources(exdir, exts):
+    """Collect a tt-metal example/project dir's device-kernel texts + concatenated host text:
+      device = sources under a kernels/ dir, keyed by basename — or by path-relative-to-exdir when
+               a basename collides across nested sub-examples, so NONE is dropped;
+      host   = the remaining editable sources (the .cpp driver that sets the args).
+    Returns (device:{key:text}, host_text:str). Pure filesystem; read errors are skipped."""
+    seg = f"{os.sep}kernels{os.sep}"
+    pend, host = [], []
+    for dp, _, names in os.walk(exdir):
+        for n in sorted(names):
+            if os.path.splitext(n)[1] not in exts:
+                continue
+            full = os.path.join(dp, n)
+            try:
+                with open(full, encoding="utf-8", errors="replace") as fh:
+                    text = fh.read()
+            except OSError:
+                continue
+            if seg in full:
+                pend.append((os.path.relpath(full, exdir), n, text))
+            else:
+                host.append(text)
+    dup = Counter(base for _, base, _ in pend)
+    device = {(rel if dup[base] > 1 else base): text for rel, base, text in pend}
+    return device, "\n".join(host)
 
 
 def _safe_dir(root, rel):

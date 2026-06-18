@@ -15,14 +15,17 @@
   const dispatch = createEventDispatcher()
   const GROUPS = [
     ['define', 'Compile-time', 'baked in at build via -D (recompiles on Deploy)'],
+    ['ctarg', 'Compile-time args', 'tt-metal get_compile_time_arg_val(i) — set by the host program'],
+    ['rtarg', 'Runtime args', 'tt-metal get_arg_val(i) — set by the host at run'],
     ['deploy', 'Deploy target', 'where + how the kernel loads'],
     ['mailbox', 'Live', 'mailbox ops — sent after load; tweak on the fly'],
   ]
 
   let meta = null, entry = null, kernel = null, values = {}, status = ''
-  let open = true, view = 'form', jsonText = '', jsonStatus = ''
+  let open = true, view = 'form', jsonText = '', jsonStatus = '', merging = false
   $: canDeploy = !!eng?.cmdUrl                 // only x280 deploys from here
   $: hasConfig = !!eng?.configUrl
+  $: canMerge = !!eng?.mergeUrl                // parse source -> populate params
 
   $: if (fileKey) load(fileKey)
   const clone = (v) => (Array.isArray(v) ? [...v] : v)
@@ -81,6 +84,18 @@
     try { await postJSON(eng.paramsSaveUrl, { key: fileKey, values }); status = 'saved as defaults ✓' }
     catch (e) { status = 'save failed: ' + e }
   }
+  let mergeMsg = ''            // shown in the bar, so it's visible from EITHER view (Form or JSON)
+  async function doMerge() {
+    if (!canMerge || !fileKey) return
+    merging = true; mergeMsg = 'merging…'
+    try {
+      const r = await postJSON(eng.mergeUrl, { key: fileKey })
+      await load(fileKey)
+      mergeMsg = r.count ? `merged ${r.count}: ${r.added.join(', ')}` : 'no new params found in source'
+      status = mergeMsg
+    } catch (e) { mergeMsg = 'merge failed: ' + e; status = mergeMsg }
+    finally { merging = false }
+  }
 </script>
 
 {#if meta}
@@ -95,6 +110,13 @@
           <button class:on={view === 'form'} on:click={() => setView('form')}>Form</button>
           <button class:on={view === 'json'} on:click={() => setView('json')}>JSON</button>
         </div>
+      {/if}
+      {#if open && canMerge}
+        {#if mergeMsg}<span class="mergemsg" title={mergeMsg}>{mergeMsg}</span>{/if}
+        <button class="merge" on:click={doMerge} disabled={merging}
+                title="parse the kernel source(s) and merge discovered params into kernel.json (idempotent — your edits are kept)">
+          {merging ? 'merging…' : 'Merge ⤵'}
+        </button>
       {/if}
       {#if canDeploy}
         <button class="run" on:click={onDeploy} disabled={busy} title="compile with these defines, load to the target, then send live ops">
@@ -119,9 +141,12 @@
                 <div class="ghead">{title} <span class="dim">— {blurb}</span></div>
                 {#each byKind(kind) as p}
                   <div class="prow">
-                    <label class="pl" title={p.desc}>{p.name}</label>
+                    <span class="pl" title={p.desc}>{p.name}{#if p.index !== undefined}<span class="ix">[{p.index}]</span>{/if}</span>
                     <div class="pin">
-                      {#if p.multi}
+                      {#if kind === 'rtarg' || kind === 'ctarg'}
+                        <!-- tt-metal args are host-owned: show discovered value read-only, no fake apply -->
+                        <span class="roval">{p.default ?? '— (set by host)'}</span>
+                      {:else if p.multi}
                         <div class="chips">{#each p.choices as c}<button class="chip" class:on={inArr(p, c)} on:click={() => toggleMulti(p, c)}>{c}</button>{/each}</div>
                       {:else if p.type === 'bool'}
                         <input type="checkbox" bind:checked={values[p.name]} />
@@ -140,10 +165,12 @@
               </div>
             {/if}
           {/each}
-          {#if !meta.params.length}<div class="dim pad">No params yet — switch to <b>JSON</b> to add some.</div>{/if}
+          {#if !meta.params.length}<div class="dim pad">No params yet — {#if canMerge}click <b>Merge ⤵</b> to import from source, or {/if}switch to <b>JSON</b> to add some.</div>{/if}
           <div class="foot">
             <span class="st">{status}</span><span class="sp"></span>
-            <button on:click={saveDefaults} title="persist these values as the kernel's defaults">Save defaults</button>
+            {#if eng?.paramsSaveUrl}
+              <button on:click={saveDefaults} title="persist these values as the kernel's defaults">Save defaults</button>
+            {/if}
           </div>
         {/if}
       </div>
@@ -163,6 +190,11 @@
   .seg button.on { background: var(--accent); color: #1a1206; font-weight: 600; }
   .run { font-family: inherit; font-size: 11.5px; background: var(--accent); color: #1a1206; border: 1px solid var(--accent); border-radius: 5px; padding: 3px 12px; cursor: pointer; font-weight: 600; flex: none; }
   .run:disabled { opacity: 0.5; cursor: default; }
+  .merge { font-family: inherit; font-size: 11px; background: var(--panel2); color: var(--accent); border: 1px solid var(--accent); border-radius: 5px; padding: 3px 10px; cursor: pointer; flex: none; }
+  .merge:disabled { opacity: 0.5; cursor: default; }
+  .mergemsg { color: var(--muted); font-size: 10.5px; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: none; }
+  .ix { color: var(--muted); font-size: 10px; margin-left: 2px; }
+  .roval { font-family: ui-monospace, monospace; font-size: 12px; color: var(--fg); background: var(--panel2); border: 1px solid var(--line); border-radius: 5px; padding: 2px 8px; }
   .body { padding: 2px 12px 8px; max-height: 44vh; overflow: auto; }
   .group { margin: 4px 0 8px; }
   .ghead { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent); border-bottom: 1px solid var(--line); padding-bottom: 3px; margin-bottom: 4px; }

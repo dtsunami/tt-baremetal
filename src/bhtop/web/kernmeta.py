@@ -8,6 +8,10 @@ toolchains": a kernel declares its params once, and each is routed to the right 
               source leaves the macro #ifndef-guarded.
   * deploy  — a field of the deploy request (tile, hart, all_harts, addr).
   * mailbox — a live /api/l2/cmd op (op, arg0) sent AFTER load (cooperative steering; no recompile).
+  * rtarg   — a tt-metal RUNTIME arg (get_arg_val<T>(index)); set by the host at run. Carries an
+              `index` (+ `source` = device kernel file). Documentation/UI only — the tt-metal host
+              owns the apply path, so route() does not bucket it. Discovered by kernparse.
+  * ctarg   — a tt-metal COMPILE-TIME arg (get_compile_time_arg_val(index)); same shape as rtarg.
 
 A kernel folder holds its source(s) + kernel.json. Kernels without a sidecar fall back to a
 default meta (just the deploy knobs) so the param dialog always has tile/hart. PURE (no device,
@@ -21,9 +25,9 @@ kernel.json shape:
       "params": [ {param}, ... ],
       "src_map": {"file.cpp": "/abs/tt-metal/path"}   # NOC/TENSIX only; null otherwise
     }
-  {param} = {"name","kind"(define|deploy|mailbox),"type"(int|hex|enum|bool|str),
-             "default","desc","op"?(mailbox),"choices"?(enum labels),"vals"?(enum arg0 ints),
-             "min"?,"max"?}
+  {param} = {"name","kind"(define|deploy|mailbox|rtarg|ctarg),"type"(int|hex|enum|bool|str),
+             "default","desc","op"?(mailbox),"index"?(rtarg/ctarg),"source"?(tt-metal device file),
+             "choices"?(enum labels),"vals"?(enum arg0 ints),"min"?,"max"?}
 """
 import json
 import os
@@ -31,7 +35,7 @@ import os
 from ..l2cpu.regmap import CODE_ADDR
 
 META_NAME = "kernel.json"
-KINDS = ("define", "deploy", "mailbox")
+KINDS = ("define", "deploy", "mailbox", "rtarg", "ctarg")
 TYPES = ("int", "hex", "enum", "bool", "str")
 
 # The deploy knobs every X280 kernel has, even with no sidecar — so tile/hart always show.
@@ -92,6 +96,13 @@ def validate(meta):
             raise ValueError(f"param {p['name']}: type must be one of {TYPES}")
         if p["kind"] == "mailbox" and "op" not in p:
             raise ValueError(f"param {p['name']}: mailbox param needs an 'op'")
+        if p["kind"] in ("rtarg", "ctarg"):
+            idx = p.get("index")
+            if idx is None:                 # named tt-metal arg (no positional index) — needs a key
+                if not (p.get("arg_name") or p.get("name")):
+                    raise ValueError(f"param {p['name']}: {p['kind']} needs an 'index' or 'arg_name'")
+            elif isinstance(idx, bool) or not isinstance(idx, int) or idx < 0:
+                raise ValueError(f"param {p['name']}: {p['kind']} 'index' must be an integer >= 0")
         if p.get("type") == "enum" and not p.get("choices"):
             raise ValueError(f"param {p['name']}: enum param needs 'choices'")
     return meta
@@ -141,11 +152,12 @@ def _arg0(param, value):
     """Compute the mailbox arg0 for a param value. enum -> vals[idx] (or idx); hex/int -> int;
     bool -> 1/0."""
     v = coerce(param, value)
-    if param["type"] == "enum":
+    t = param.get("type", "int")
+    if t == "enum":
         idx = (param["choices"]).index(v)
         vals = param.get("vals")
         return int(vals[idx]) if vals else idx
-    if param["type"] == "bool":
+    if t == "bool":
         return 1 if v else 0
     return int(v)
 
@@ -162,6 +174,7 @@ def route(meta, values):
             out["defines"][name] = coerce(p, raw)
         elif p["kind"] == "deploy":
             out["deploy"][name] = coerce(p, raw)
-        else:  # mailbox
+        elif p["kind"] == "mailbox":
             out["mailbox"].append({"name": name, "op": int(p["op"]), "arg0": _arg0(p, raw)})
+        # rtarg / ctarg are tt-metal host-owned (documentation only) — not routed here
     return out

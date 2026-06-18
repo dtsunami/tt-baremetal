@@ -18,6 +18,7 @@ export const ENGINES = [
     fileUrl: (key) => `/api/lab/file?path=${enc(key)}`,
     paramsUrl: (key) => `/api/lab/params?key=${enc(key)}`,   // kernel.json overlay (params + JSON editor)
     configUrl: (key) => `/api/lab/config?key=${enc(key)}`, configSaveUrl: '/api/lab/config',
+    mergeUrl: '/api/lab/merge',                              // parse tt-metal source -> populate params
     keyOf: (f) => f.key, nameOf: (f) => f.name, roleOf: (f) => f.role, lang: () => 'cpp',
     caps: { duplicate: true, revert: true, regen: true },   // in-place edit + restore-to-pristine
     regenUrl: '/api/lab/restore', regenLabel: 'restore',
@@ -32,6 +33,7 @@ export const ENGINES = [
     paramsUrl: (key) => `/api/l2/params?key=${enc(key)}`,     // per-kernel meta-params (kernel.json)
     paramsSaveUrl: '/api/l2/params',                          // persist chosen values as defaults
     configUrl: (key) => `/api/l2/config?key=${enc(key)}`, configSaveUrl: '/api/l2/config',  // raw kernel.json (JSON editor)
+    mergeUrl: '/api/l2/merge',                                // parse bare-metal source -> populate params
     cmdUrl: '/api/l2/cmd',                                    // live mailbox op (deploy-time + on-the-fly)
     keyOf: (f) => f.key, nameOf: (f) => f.name, roleOf: (f) => f.role || f.lang, lang: (f) => f.lang,
     // private workspace: full file CRUD + folder ops + regenerate-examples
@@ -48,6 +50,7 @@ export const ENGINES = [
     fileUrl: (key) => `/api/tlab/file?path=${enc(key)}`,
     paramsUrl: (key) => `/api/tlab/params?key=${enc(key)}`,
     configUrl: (key) => `/api/tlab/config?key=${enc(key)}`, configSaveUrl: '/api/tlab/config',
+    mergeUrl: '/api/tlab/merge',                        // parse tt-metal source -> populate params
     keyOf: (f) => f.key, nameOf: (f) => f.name, roleOf: (f) => f.role, lang: () => 'cpp',
     caps: { duplicate: true, revert: true, regen: true },
     regenUrl: '/api/tlab/restore', regenLabel: 'restore',

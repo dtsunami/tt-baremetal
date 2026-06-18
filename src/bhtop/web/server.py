@@ -20,7 +20,7 @@ from .schemas import (InjectRequest, KernelRunRequest, LabWriteRequest,
                       L2CompileRequest, L2TileRequest, L2WriteRequest,
                       L2NewRequest, L2PokeRequest, L2CommandRequest, L2FreqRequest,
                       L2FolderRequest, L2ParamsRequest, KernelConfigRequest,
-                      TlabRunRequest, CopyRequest)
+                      KernelMergeRequest, TlabRunRequest, CopyRequest)
 from ..patterns import PATTERN_INFO
 
 app = FastAPI(title="bhtop-web")
@@ -201,6 +201,14 @@ async def tlab_config_save(req: KernelConfigRequest):
         raise HTTPException(400, str(e))
 
 
+@app.post("/api/tlab/merge")
+async def tlab_merge(req: KernelMergeRequest):
+    try:
+        return await dm.tlab_merge_params(req.key)
+    except (ValueError, OSError) as e:
+        raise HTTPException(400, str(e))
+
+
 @app.post("/api/tlab/restore")
 async def tlab_restore():
     return await dm.tlab_restore()
@@ -279,6 +287,14 @@ async def lab_config(key: str):
 async def lab_config_save(req: KernelConfigRequest):
     try:
         return await dm.lab_config_put(req.key, req.text)
+    except (ValueError, OSError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/lab/merge")
+async def lab_merge(req: KernelMergeRequest):
+    try:
+        return await dm.lab_merge_params(req.key)
     except (ValueError, OSError) as e:
         raise HTTPException(400, str(e))
 
@@ -443,6 +459,14 @@ async def l2_config(key: str):
 async def l2_config_save(req: KernelConfigRequest):
     try:
         return await dm.l2_config_put(req.key, req.text)
+    except (ValueError, OSError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/l2/merge")
+async def l2_merge(req: KernelMergeRequest):
+    try:
+        return await dm.l2_merge_params(req.key)
     except (ValueError, OSError) as e:
         raise HTTPException(400, str(e))
 
