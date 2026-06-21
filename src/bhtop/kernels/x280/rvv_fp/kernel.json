@@ -1,0 +1,20 @@
+{
+  "title": "rvv_fp",
+  "lang": "c",
+  "engine": "x280",
+  "doc": "rvv_fp \u2014 floating-point vector FMA: vfmacc (acc += a*b) on f32, 16 lanes/op. The x280 has full FP",
+  "sources": [
+    "rvv_fp.c"
+  ],
+  "params": [],
+  "src_map": null,
+  "telemetry": {
+    "0": "samples",
+    "1": "ops/win",
+    "2": "mcyc/op",
+    "3": "result",
+    "4": "minstr/op",
+    "62": "cycles",
+    "63": "retired"
+  }
+}

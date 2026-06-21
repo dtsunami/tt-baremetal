@@ -1,0 +1,20 @@
+{
+  "title": "rvv_remu",
+  "lang": "c",
+  "engine": "x280",
+  "doc": "rvv_remu \u2014 vector modulo, the CRT residue step. vremu.vx is the general divider; for 2^k moduli",
+  "sources": [
+    "rvv_remu.c"
+  ],
+  "params": [],
+  "src_map": null,
+  "telemetry": {
+    "0": "samples",
+    "1": "ops/win",
+    "2": "mcyc/op",
+    "3": "result",
+    "4": "minstr/op",
+    "62": "cycles",
+    "63": "retired"
+  }
+}

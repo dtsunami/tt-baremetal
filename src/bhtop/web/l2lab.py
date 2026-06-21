@@ -279,19 +279,21 @@ def compile_kernel(content, lang, addr, defines=None):
     or parsed compiler errors on failure — never raises (so the UI can show them inline).
     `defines` (name->int|hex) are the kernel's define-kind params, injected over the map."""
     ext = {"c": ".c", "asm": ".s", "rust": ".rs"}.get(lang, ".c")
+    # Kernels that use RVV intrinsics (riscv_vector.h, directly or via <rvv.h>) need the V ISA.
+    march = "rv64gcv" if ("riscv_vector.h" in content or "<rvv.h>" in content) else "rv64gc"
     with tempfile.TemporaryDirectory() as d:
         src = os.path.join(d, "kernel" + ext)
         with open(src, "w") as fh:
             fh.write(content)
         try:
-            words = toolchain.compile_source(src, base=addr, lang=lang, defines=defines)
+            words = toolchain.compile_source(src, base=addr, lang=lang, defines=defines, march=march)
         except toolchain.ToolError as e:
             msg = str(e)
             errs = [{**err, "file": os.path.basename(err["file"])}
                     for err in labkit.parse_compiler_errors(msg)]
             return {"ok": False, "error": msg, "errors": errs}
         try:
-            dis = toolchain.disasm(src, base=addr, lang=lang, defines=defines)
+            dis = toolchain.disasm(src, base=addr, lang=lang, defines=defines, march=march)
         except Exception:
             dis = ""
         return {"ok": True, "words": words, "bytes": len(words) * 4, "addr": addr,

@@ -15,8 +15,17 @@
   import ParamPanel from '../lib/ParamPanel.svelte'
   import { getJSON, postJSON } from '../lib/api.js'
   import { byKey } from '../lib/engines.js'
+  import { loadIsa, lookup, tipHtml } from '../lib/isa.js'
 
   let deploying = false
+
+  // Tensix ISA hover tooltips: load the opcode/bit-field map once, then make TT_OP_* mnemonics
+  // in the editor self-describe (only while a Tensix source is open).
+  let isaMnem = null
+  loadIsa().then((d) => { isaMnem = d.mnemonics || {} })
+  $: isaHover = (active?.engine === 'tensix' && isaMnem)
+    ? (word) => tipHtml(lookup(isaMnem, word))
+    : null
 
   let running = {}          // by_source map from /api/running
   let active = null         // {engine, key, name, sel}
@@ -38,9 +47,35 @@
   function afterRun() { runTick++; loadRunning() }
 
   async function onSelect(e) {
-    const { engine, key, name, sel } = e.detail
+    const { engine, key, name, sel, overlay, llk } = e.detail
     if (!engine) { active = null; return }
     if (dirty && !confirm('Discard unsaved changes?')) return
+    if (llk) {                                        // LLK perf kernel: load its .cpp into the editor
+      try {
+        const f = await getJSON(`/api/tensix/llk/${encodeURIComponent(llk)}`)
+        active = { engine: 'tensix', key, name, sel, llk }
+        content = f.source; saved = f.source; lang = 'cpp'; role = 'llk'
+        editor?.setDoc(f.source); editor?.setLang('cpp')
+        status = `LLK perf kernel · ${name} · built on llk_lib (build.sh)`
+      } catch (ex) {
+        active = { engine: 'tensix', key, name, sel, llk }; content = ''; saved = ''
+        status = 'open LLK kernel failed: ' + ex
+      }
+      return
+    }
+    if (overlay) {                                   // bootloader overlay: load its .c into the editor
+      try {
+        const f = await getJSON(`/api/tensix/bl/source?name=${encodeURIComponent(overlay)}`)
+        active = { engine: 'tensix', key, name, sel, overlay }
+        content = f.source; saved = f.source; lang = 'c'; role = 'overlay'
+        editor?.setDoc(f.source); editor?.setLang('c')
+        status = `bootloader overlay · ${name}`
+      } catch (ex) {
+        active = { engine: 'tensix', key, name, sel, overlay }; content = ''; saved = ''
+        status = 'open overlay failed: ' + ex
+      }
+      return
+    }
     const en = byKey[engine]
     try {
       const f = await getJSON(en.fileUrl(key))
@@ -58,7 +93,8 @@
     if (!active || !dirty || saving) return
     saving = true
     try {
-      if (active.engine === 'x280') await postJSON('/api/l2/file', { name: active.key, content })
+      if (active.overlay) await postJSON('/api/tensix/bl/source', { name: active.overlay, source: content })
+      else if (active.engine === 'x280') await postJSON('/api/l2/file', { name: active.key, content })
       else if (active.engine === 'noc') await postJSON('/api/lab/file', { path: active.key, content })
       else await postJSON('/api/tlab/file', { path: active.key, content })
       saved = content; status = 'saved ' + active.name
@@ -103,7 +139,7 @@
     {#if active && eng?.paramsUrl}
       <ParamPanel {eng} fileKey={active.key} busy={deploying} on:deploy={onParamDeploy} />
     {/if}
-    <div class="code-wrap"><CodeEditor bind:this={editor} {lang} onChange={(t) => content = t} onSave={save} /></div>
+    <div class="code-wrap"><CodeEditor bind:this={editor} {lang} hover={isaHover} onChange={(t) => content = t} onSave={save} /></div>
     <div class="statusbar"><span class="st">{status}</span></div>
   </svelte:fragment>
 
@@ -122,7 +158,7 @@
     {:else if active.engine === 'noc'}
       <NocObserve {active} {dirty} onSave={save} on:ran={afterRun} />
     {:else if active.engine === 'tensix'}
-      <TensixObserve {active} {dirty} onSave={save} on:ran={afterRun} />
+      <TensixObserve {active} preselect={active.overlay} {content} {dirty} onSave={save} on:ran={afterRun} />
     {:else if active.engine === 'x280'}
       <HartObserve {active} {content} {lang} {dirty} onSave={save} on:ran={afterRun} />
     {/if}

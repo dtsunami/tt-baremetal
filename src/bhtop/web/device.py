@@ -72,6 +72,13 @@ class DeviceManager:
         self._l2_busy = None         # label while a bringup job is in flight
         self._last_bringup = None    # last bringup result (persisted for re-fetch)
         self._l2_deployed = {}       # (tile,hart) -> {name,lang,addr,seized,words} last deploy
+        self._tloop = None           # active Tensix re-go loop {x,y,hz,n,task} or None
+        # ---- resident bootloader cockpit (hot-swap code overlays over exalens) ----
+        self.bl_chan = labkit.Broadcaster()   # /ws/bootloader (client steers focused core/hz)
+        self._bl_active = None       # focused (x,y) the telemetry stream reads, or None
+        self._bl_hz = 4.0            # bootloader telemetry sample rate
+        self._bl_loaded = {}         # (x,y) -> {slot: {"overlay","hash","bytes"}} last staged
+        self._bl_launcher = None     # Popen of the metal bootloader launcher (deploys + parks)
 
     # ---- lifecycle ---------------------------------------------------------
     async def start(self):
@@ -80,6 +87,7 @@ class DeviceManager:
         self.mode = "polling"
         asyncio.create_task(self._poll_loop())
         asyncio.create_task(self._l2_tele_loop())
+        asyncio.create_task(self._bl_tele_loop())
 
     async def _run(self, fn, *a):
         """Run a blocking device call on the single worker thread."""
@@ -289,7 +297,7 @@ class DeviceManager:
     async def tlab_examples(self):
         from .. import metal
         return await self._run(lambda: {"available": metal.available(),
-                                        "examples": metal.compute_examples()})
+                                        "examples": metal.example_names()})
 
     async def tlab_run(self, name, timeout=900):
         if self.mode == "busy":
@@ -320,10 +328,15 @@ class DeviceManager:
 
     def _tlab_run_blocking(self, name, timeout):
         from .. import metal
+        from . import tlab_build
         passed, out = metal.run_example(name, timeout=timeout)
+        short = name.replace("metal_example_", "")
+        try:                                         # capture the JIT compile recipe for standalone builds
+            tlab_build.save_recipe(short, out)
+        except Exception:
+            pass
         compute = metal.aggregate_compute()          # per-Tensix-core per-engine cycles
         if compute:                                  # remember which kernel ran on which Tensix core
-            short = name.replace("metal_example_", "")
             for core, c in compute["cores"].items():
                 self._tlab_deployed[core] = {"kernel": short, "math_occ": c["math_occ"]}
         # tt-metal reset the device on init: revalidate ctx (reinit if stale) + rebaseline poller
@@ -391,6 +404,28 @@ class DeviceManager:
     async def tlab_disasm(self):
         from . import tlab_disasm
         return await asyncio.to_thread(tlab_disasm.fetch_last)
+
+    async def tlab_build_log(self):
+        from . import tlab_disasm
+        return await asyncio.to_thread(tlab_disasm.fetch_build_log)
+
+    # ---- standalone (no-device) build of a kernel from a bhtop-extracted copy ----
+    async def tlab_extract(self, example):
+        from . import tlab_build
+        return await asyncio.to_thread(tlab_build.extract, example)
+
+    async def tlab_build_standalone(self, example):
+        from . import tlab_build
+        return await asyncio.to_thread(tlab_build.build, example)
+
+    async def tlab_recipe(self, example):
+        from . import tlab_build
+        rec = await asyncio.to_thread(tlab_build.load_recipe, example)
+        return {"have": bool(rec), "units": len(rec["units"]) if rec else 0}
+
+    async def tlab_rebuild(self):
+        from . import tlab_disasm
+        return await asyncio.to_thread(tlab_disasm.force_rebuild)
 
     async def running(self):
         """Which tt-metal kernels are live, keyed by JIT build hash (web/inspector.py): the
@@ -682,6 +717,140 @@ class DeviceManager:
         """Decode v0..v31 + vector CSRs (kernel must have called bh_dump_vec())."""
         return await self._run(lambda: self._l2_get().vec_state(tile, hart, ew=ew))
 
+    # ---- Tensix launch (exalens RTA poke + re-go) — device thread, shared ctx ----
+    # Reads/pokes a Tensix worker's launch mailbox in L1 (see bhtop.tensix). Tensix L1 over NoC is
+    # the safe surface (not the ARC/PCIe hang hazard). Rides a tt-metal-loaded program: runtime
+    # args are pokeable, then go() re-runs without a rebuild.
+    RTA_PREVIEW = 8                  # runtime-arg words read per enabled processor for display
+
+    def _tensix_core(self, x, y):
+        t = self._by_noc0.get((x, y))
+        if t is None:
+            raise ValueError(f"no tile at noc0 ({x},{y})")
+        if t.kind != "tensix":
+            raise ValueError(f"({x},{y}) is a {t.kind} tile, not a Tensix worker")
+        return t
+
+    async def tensix_launch(self, x, y, index=None):
+        return await self._run(self._tensix_launch, x, y, index)
+
+    def _tensix_launch(self, x, y, index):
+        from ..tensix import TensixLauncher, abi
+        from . import inspector
+        L = TensixLauncher(self._tensix_core(x, y).coord, ctx=self.ctx)
+        snap = L.snapshot(index, kernels=inspector.by_watcher_id())
+        kc = L.read_launch(snap["active_index"])
+        kbyproc = {pr["proc"]: pr.get("kernel") for pr in snap["procs"]}   # kernel identity per proc
+        rta = []
+        for p in kc["enabled_procs"]:
+            try:
+                vals = L.read_rta(p, self.RTA_PREVIEW, index=snap["active_index"])
+            except Exception:
+                vals = []
+            name = abi.PROC_NAME.get(p, p)
+            rta.append({"proc": name, "proc_id": p, "addr": hex(abi.rta_l1_addr(kc, p)),
+                        "values": vals, "kernel": kbyproc.get(name)})
+        snap["rta"] = rta
+        lp = self.tensix_loop_status()               # is a re-go loop running on THIS core?
+        snap["loop"] = lp if (lp["running"] and lp["x"] == x and lp["y"] == y) else {"running": False}
+        return snap
+
+    async def tensix_write_rta(self, x, y, proc, values, arg_offset=0, index=None):
+        return await self._run(self._tensix_write_rta, x, y, proc, values, arg_offset, index)
+
+    def _tensix_write_rta(self, x, y, proc, values, arg_offset, index):
+        from ..tensix import TensixLauncher
+        L = TensixLauncher(self._tensix_core(x, y).coord, ctx=self.ctx)
+        addr = L.write_rta(int(proc), [int(v) & 0xFFFFFFFF for v in values],
+                           index=index, arg_offset=int(arg_offset))
+        return {"ok": True, "addr": hex(addr), "wrote": len(values)}
+
+    async def tensix_go(self, x, y, signal=None):
+        return await self._run(self._tensix_go, x, y, signal)
+
+    def _tensix_go(self, x, y, signal):
+        from ..tensix import TensixLauncher, abi
+        L = TensixLauncher(self._tensix_core(x, y).coord, ctx=self.ctx)
+        return L.go(abi.RUN_MSG_GO if signal is None else int(signal))
+
+    async def tensix_scan(self):
+        return await self._run(self._tensix_scan)
+
+    def _tensix_scan(self):
+        """Brief every Tensix worker so the cockpit can show WHICH cores have a resident program
+        AND which kernel runs there (joins watcher_kernel_ids with the Inspector). ~5-6 NoC reads
+        per core; runs on the device thread."""
+        from ..tensix import TensixLauncher
+        from . import inspector
+        kmap = inspector.by_watcher_id()
+        cores = []
+        for t in self.fp.placed:
+            if t.kind != "tensix":
+                continue
+            x, y = t.noc0
+            try:
+                b = TensixLauncher(t.coord, ctx=self.ctx).brief(kernels=kmap)
+                cores.append({"x": x, "y": y, **b})
+            except Exception as e:               # a core that won't read shouldn't sink the scan
+                cores.append({"x": x, "y": y, "resident": False, "error": str(e)})
+        return {"cores": cores, "n": len(cores), "inspector": bool(kmap),
+                "n_resident": sum(1 for c in cores if c.get("resident"))}
+
+    # ---- Tensix run-loop: re-issue go continuously so the one-shot kernel runs forever ----
+    async def tensix_loop(self, x, y, on=True, hz=10, force=False):
+        """Start/stop an infinite re-go loop on a core. A tt-metal kernel runs once per go (→DONE);
+        this re-issues go at `hz` so it re-runs continuously (watch L1/heat change live). One loop
+        at a time; starting a new one replaces it. Refuses dispatch-infra cores unless force."""
+        if self._tloop and self._tloop.get("task"):
+            self._tloop["task"].cancel()
+            self._tloop = None
+        if not on:
+            return {"running": False}
+        self._tensix_core(x, y)                       # validate it's a Tensix worker (raises -> 400)
+        if not force:                                 # don't stomp the command-queue dispatch cores
+            from . import inspector
+            from ..tensix import TensixLauncher
+            b = await self._run(lambda: TensixLauncher(self._tensix_core(x, y).coord, ctx=self.ctx)
+                                .brief(kernels=inspector.by_watcher_id()))
+            if b.get("resident") and not b.get("user_kernel"):
+                raise ValueError(f"({x},{y}) runs dispatch infra ({', '.join(b.get('kernel_names') or [])}) "
+                                 "— pass force=true to loop it anyway")
+        hz = max(1, min(int(hz), 50))
+        st = {"x": x, "y": y, "hz": hz, "n": 0, "running": True}
+        st["task"] = asyncio.create_task(self._tensix_loop_run(st))
+        self._tloop = st
+        return {"running": True, "x": x, "y": y, "hz": hz}
+
+    async def _tensix_loop_run(self, st):
+        period = 1.0 / st["hz"]
+        try:
+            while True:
+                try:
+                    await self._run(self._tensix_go, st["x"], st["y"], None)
+                    st["n"] += 1
+                except Exception as e:                # keep looping across a transient read/write blip
+                    st["error"] = str(e)
+                await asyncio.sleep(period)
+        except asyncio.CancelledError:
+            st["running"] = False
+
+    def tensix_loop_status(self):
+        t = self._tloop
+        if not t or not t.get("running"):
+            return {"running": False}
+        return {"running": True, "x": t["x"], "y": t["y"], "hz": t["hz"], "n": t["n"],
+                "error": t.get("error")}
+
+    async def tensix_peek(self, x, y, addr, n=8):
+        return await self._run(self._tensix_peek, x, y, addr, n)
+
+    def _tensix_peek(self, x, y, addr, n):
+        """Raw L1 read window — the liveness primitive: poll an address the kernel writes to."""
+        from ..tensix import TensixLauncher
+        L = TensixLauncher(self._tensix_core(x, y).coord, ctx=self.ctx)
+        words = L.rd(int(addr), max(1, min(int(n), 256)))
+        return {"addr": int(addr), "n": len(words), "words": words}
+
     async def l2_power(self):
         """Board power/current/temperature via ARC telemetry."""
         return await self._run(lambda: self._l2_get().power())
@@ -807,6 +976,268 @@ class DeviceManager:
 
     def _l2_broadcast(self, frame):
         self.l2_chan.broadcast(frame)
+
+    # ---- resident bootloader cockpit --------------------------------------
+    # Rides the bootloader resident on each worker (deployed by the metal launcher); all I/O is
+    # L1-over-NoC via Bootloader/TensixLauncher on the single device thread. Overlays + their
+    # telemetry/param schemas + hashes come from tensix.overlays (the registry).
+    def _bl(self, x, y):
+        from ..tensix import bootloader as blmod
+        from ..tensix import TensixLauncher
+        return blmod.Bootloader(TensixLauncher(self._tensix_core(x, y).coord, ctx=self.ctx))
+
+    def tensix_bl_overlays(self):
+        """The overlay registry (metadata + telemetry/param schemas + hashes). No device touch."""
+        from ..tensix import overlays
+        return {"overlays": overlays.manifest(), "template": overlays.TEMPLATE}
+
+    async def tensix_bl_compile(self, name, source):
+        """Compile a user overlay source -> registered .bin (CPU work, off the device thread)."""
+        from ..tensix import overlays
+        return await asyncio.to_thread(overlays.compile, name, source)
+
+    def tensix_bl_source(self, name):
+        """Overlay .c source for the editor (file read; no device touch)."""
+        from ..tensix import overlays
+        return {"name": name, "source": overlays.source(name), "lang": "c"}
+
+    # ---- deploy the resident bootloader (run the metal launcher subprocess) ----
+    def _bl_launcher_path(self):
+        import os
+        home = os.path.expanduser(os.environ.get("TT_METAL_HOME") or "~/tt-metal")
+        return home, os.path.join(home, "build_Release/programming_examples/contributed/bootloader")
+
+    def _bl_kill_launchers(self):
+        """Stop our launcher + any stray one. SIGINT first so it close()s cleanly (resets cores,
+        frees the device) before a re-launch; then force."""
+        import signal
+        import subprocess
+        import time
+        if self._bl_launcher and self._bl_launcher.poll() is None:
+            try:
+                self._bl_launcher.send_signal(signal.SIGINT); self._bl_launcher.wait(timeout=8)
+            except Exception:
+                try: self._bl_launcher.kill()
+                except Exception: pass
+        self._bl_launcher = None
+        subprocess.run(["pkill", "-INT", "-f", "programming_examples/contributed/bootloader"],
+                       capture_output=True)
+        time.sleep(3)
+        subprocess.run(["pkill", "-9", "-f", "programming_examples/contributed/bootloader"],
+                       capture_output=True)
+
+    def bl_launch_status(self):
+        ours = self._bl_launcher is not None and self._bl_launcher.poll() is None
+        import subprocess
+        stray = subprocess.run(["pgrep", "-f", "programming_examples/contributed/bootloader$"],
+                               capture_output=True).returncode == 0
+        return {"running": ours or stray, "owned": ours}
+
+    async def tensix_bl_launch(self, grid="2x2"):
+        return await asyncio.to_thread(self._bl_launch, grid)
+
+    def _bl_launch(self, grid):
+        """Kill any existing launcher, then spawn a fresh one that JIT-builds the bootloader and
+        multicasts it to a `grid` (WxH or 'all') block of workers, then parks holding the device."""
+        import os
+        import re
+        import subprocess
+        if not re.fullmatch(r"all|\d+x\d+", grid or ""):
+            return {"ok": False, "error": "grid must be WxH (e.g. 2x2) or 'all'"}
+        home, binpath = self._bl_launcher_path()
+        if not os.path.exists(binpath):
+            return {"ok": False, "error": f"launcher not built: {binpath} — build the 'bootloader' target"}
+        self._bl_kill_launchers()
+        # metal determines its root from CWD or TT_METAL_RUNTIME_ROOT (TT_METAL_HOME alone isn't
+        # enough in this build) — so run FROM the repo root and set the runtime root explicitly.
+        env = dict(os.environ, TT_METAL_HOME=home, TT_METAL_RUNTIME_ROOT=home,
+                   TT_METAL_SLOW_DISPATCH_MODE="1", BL_GRID=grid)
+        env.pop("TT_METAL_WATCHER", None)
+        logp = "/tmp/bl_web_launcher.log"
+        log = open(logp, "w")
+        self._bl_launcher = subprocess.Popen(
+            [binpath], env=env, cwd=home, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        return {"ok": True, "pid": self._bl_launcher.pid, "grid": grid, "log": logp,
+                "note": "deploying — JIT build + multicast takes a few seconds; then Scan"}
+
+    async def tensix_bl_launch_stop(self):
+        return await asyncio.to_thread(self._bl_launch_stop)
+
+    def _bl_launch_stop(self):
+        self._bl_kill_launchers()
+        return {"ok": True, "stopped": True}
+
+    async def tensix_bl_save_source(self, name, source):
+        from ..tensix import overlays
+        return await asyncio.to_thread(overlays.save_source, name, source)
+
+    async def tensix_bl_status(self, x, y):
+        return await self._run(self._tensix_bl_status, x, y)
+
+    def _tensix_bl_status(self, x, y):
+        from ..tensix import overlays, bootloader as blmod
+        b = self._bl(x, y)
+        s = b.status()
+        loaded = self._bl_loaded.get((x, y), {})
+        # decode telemetry against whatever overlay is loaded in slot A (the exec target)
+        ov = (loaded.get("A") or {}).get("overlay")
+        telem = b.L.rd(blmod.TELEM_BASE, 8)
+        s["loaded"] = loaded
+        s["telemetry"] = overlays.decode_telemetry(ov, telem)
+        s["telem_raw"] = list(telem)
+        return s
+
+    async def tensix_bl_scan(self):
+        return await self._run(self._tensix_bl_scan)
+
+    def _tensix_bl_scan(self):
+        """Classify every Tensix worker for the unified cockpit grid. Residency is AUTHORITATIVE
+        from the tt-metal launch mailbox (`enables`, set by metal at launch) + Inspector kernel
+        identity — NOT the bootloader STATUS byte (stale L1 survives a soft-reset and lies). Each
+        core gets kind ∈ {bootloader, ttmetal, idle, err}: 'bootloader' = a resident kernel named
+        'bootloader' (our overlay host, drives the bl panel); 'ttmetal' = any other resident metal
+        kernel (dispatch infra or a user program → the tt-metal panel); 'idle' = nothing resident."""
+        from ..tensix import TensixLauncher, bootloader as blmod
+        from . import inspector
+        kmap = inspector.by_watcher_id()
+        cores = []
+        for t in self.fp.placed:
+            if t.kind != "tensix":
+                continue
+            x, y = t.noc0
+            try:
+                L = TensixLauncher(t.coord, ctx=self.ctx)
+                b = L.brief(kernels=kmap)
+            except Exception as e:
+                cores.append({"x": x, "y": y, "kind": "err", "resident": False, "error": str(e)})
+                continue
+            names = b.get("kernel_names") or []
+            is_bl = bool(b.get("resident")) and ("bootloader" in names)
+            kind = "bootloader" if is_bl else ("ttmetal" if b.get("resident") else "idle")
+            e = {"x": x, "y": y, "kind": kind, "resident": bool(b.get("resident")),
+                 "kernel_names": names, "user_kernel": b.get("user_kernel"),
+                 "host_id": b.get("host_id"), "signal": b.get("signal")}
+            if is_bl:
+                try:
+                    s = blmod.Bootloader(L).status()
+                    loaded = self._bl_loaded.get((x, y), {})
+                    e.update(status=s["status_name"], heartbeat=s["heartbeat"],
+                             loaded=(loaded.get("A") or {}).get("overlay"),
+                             hash=(loaded.get("A") or {}).get("hash"))
+                except Exception:
+                    pass
+            cores.append(e)
+        return {"cores": cores, "n": len(cores), "inspector": bool(kmap),
+                "n_bootloader": sum(1 for c in cores if c["kind"] == "bootloader"),
+                "n_ttmetal": sum(1 for c in cores if c["kind"] == "ttmetal")}
+
+    async def tensix_bl_param(self, x, y, index, value):
+        return await self._run(self._tensix_bl_param, x, y, index, value)
+
+    def _tensix_bl_param(self, x, y, index, value):
+        addr = self._bl(x, y).set_param(int(index), int(value) & 0xFFFFFFFF)
+        return {"ok": True, "addr": hex(addr), "index": int(index), "value": int(value) & 0xFFFFFFFF}
+
+    async def tensix_bl_stage(self, x, y, overlay, slot="A"):
+        return await self._run(self._tensix_bl_stage, x, y, overlay, slot)
+
+    def _tensix_bl_stage(self, x, y, overlay, slot):
+        from ..tensix import overlays
+        data = overlays.bin_bytes(overlay)               # raises if unknown/unbuilt
+        r = self._bl(x, y).stage(data, slot=slot)
+        self._bl_loaded.setdefault((x, y), {})[slot.upper()] = {
+            "overlay": overlay, "hash": overlays.bin_hash(overlay), "bytes": len(data)}
+        return {**r, "overlay": overlay, "hash": overlays.bin_hash(overlay)}
+
+    async def tensix_bl_exec(self, x, y, slot="A", wait=True, timeout=5.0, force=False):
+        return await self._run(self._tensix_bl_exec, x, y, slot, wait, timeout, force)
+
+    def _tensix_bl_exec(self, x, y, slot, wait, timeout, force):
+        from ..tensix import overlays, bootloader as blmod
+        loaded = (self._bl_loaded.get((x, y), {}).get(slot.upper()) or {})
+        ov = loaded.get("overlay")
+        meta = overlays._reg().get(ov, {})
+        if meta.get("verified") in ("wedges", "untested") and not force:
+            raise ValueError(f"overlay {ov!r} is gated ({meta.get('verified')}): it can wedge the "
+                             f"core. Pass force=true to run it anyway.")
+        b = self._bl(x, y)
+        r = b.exec(slot=slot)
+        out = {**r, "overlay": ov}
+        if wait:
+            ok = b.wait_ack(timeout=float(timeout))
+            s = b.status()
+            telem = b.L.rd(blmod.TELEM_BASE, 8)
+            out.update(ok=ok, status=s["status_name"], ovl_ret=s["ovl_ret"],
+                       telemetry=overlays.decode_telemetry(ov, telem))
+        return out
+
+    async def tensix_bl_halt(self, x, y):
+        return await self._run(self._tensix_bl_halt, x, y)
+
+    def _tensix_bl_halt(self, x, y):
+        self._bl(x, y).halt()
+        return {"ok": True}
+
+    # ---- LLK perf kernels: build on llk_lib (host) + load/run on a Tensix core (TRISC boot) ----
+    async def llk_build(self, name, run_type=None):
+        from ..tensix import llk_run
+        return await asyncio.to_thread(llk_run.build, name, run_type)   # pure host compile, off device thread
+
+    async def llk_disasm(self, name):
+        from ..tensix import llk_run
+        return await asyncio.to_thread(llk_run.disasm, name)
+
+    async def overlay_disasm(self, name):
+        from ..tensix import overlays
+        return await asyncio.to_thread(overlays.disasm, name)
+
+    async def llk_run(self, name, x, y, tile_cnt=16, timeout=5.0, run_type=None):
+        return await self._run(self._llk_run, name, x, y, tile_cnt, timeout, run_type)
+
+    def _llk_run(self, name, x, y, tile_cnt, timeout, run_type):
+        from ..tensix import llk_run
+        if self.reset_needed:
+            raise ValueError("NoC hang pending — run `tt-smi -r 0` and restart the server")
+        b = llk_run.build(name, run_type)                          # (re)build for the chosen run type
+        if not b["ok"]:
+            return {"ok": False, "stage": "build", "log": b["log"], "run_type": b.get("run_type")}
+        coord = self._tensix_core(x, y).coord
+        r = llk_run.run(name, coord, ctx=self.ctx, tile_cnt=int(tile_cnt), timeout=float(timeout))
+        r["build_log"] = b["log"]
+        r["run_type"] = b.get("run_type")
+        return r
+
+    # ---- bootloader telemetry stream (focused core, own rate) ----
+    async def bl_subscribe(self):
+        return await self.bl_chan.subscribe()
+
+    def bl_unsubscribe(self, q):
+        self.bl_chan.unsubscribe(q)
+
+    def bl_select(self, x, y, hz=None):
+        if x is not None and y is not None:
+            self._bl_active = (int(x), int(y))
+        if hz:
+            self._bl_hz = max(1.0, min(10.0, float(hz)))
+
+    async def _bl_tele_loop(self):
+        while True:
+            await asyncio.sleep(1.0 / max(self._bl_hz, 1.0))
+            if len(self.bl_chan) == 0 or self._bl_active is None:
+                continue
+            x, y = self._bl_active
+            if self.reset_needed or self._paused or self.mode not in ("polling", "injecting"):
+                self._bl_broadcast({"x": x, "y": y, "paused": True, "mode": self.mode})
+                continue
+            try:
+                frame = await self._run(self._tensix_bl_status, x, y)
+                frame.update(x=x, y=y, ts=round(time.monotonic(), 3), hz=self._bl_hz)
+            except Exception as e:                        # pragma: no cover
+                frame = {"x": x, "y": y, "error": str(e)}
+            self._bl_broadcast(frame)
+
+    def _bl_broadcast(self, frame):
+        self.bl_chan.broadcast(frame)
 
     # ---- static model + status (no device read) ---------------------------
     def floorplan_model(self):

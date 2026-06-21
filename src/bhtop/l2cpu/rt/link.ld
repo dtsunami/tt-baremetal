@@ -7,7 +7,8 @@ OUTPUT_ARCH(riscv)
 ENTRY(_start)
 
 LOAD_ADDR = DEFINED(LOAD_ADDR) ? LOAD_ADDR : 0x30008000;  /* toolchain passes --defsym=LOAD_ADDR=<regmap.CODE_ADDR> */
-STACK_SIZE = 0x4000;          /* 16 KiB */
+STACK_SIZE = 0x2000;          /* 8 KiB — keeps __stack_top under the writable GDDR window the minimal
+                               * bringup leaves (no L3-cache config); ample for these freestanding kernels */
 
 SECTIONS
 {

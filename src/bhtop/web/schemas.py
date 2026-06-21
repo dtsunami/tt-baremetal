@@ -88,6 +88,10 @@ class TlabRunRequest(BaseModel):
     timeout: int = 900        # JIT-compiles compute kernels on first run
 
 
+class TlabExampleRequest(BaseModel):
+    example: str              # example short-name (e.g. 'vecadd') for extract / standalone build
+
+
 class CopyRequest(BaseModel):
     src: str                  # existing file (path or name) to duplicate
     name: str                 # new file name for the copy (a fresh variation)
@@ -110,3 +114,78 @@ class KernelConfigRequest(BaseModel):
 
 class KernelMergeRequest(BaseModel):
     key: str                  # a file key inside the kernel; parse its source(s) + merge params
+
+
+# ---- Tensix launch (exalens RTA poke + re-go) ----
+class TensixRtaRequest(BaseModel):
+    x: int                    # noc0 coords of the Tensix worker core
+    y: int
+    proc: int                 # TensixProcessorTypes id (DM0=0, DM1=1, MATH0=2, MATH1=3, MATH2=4)
+    values: list[int]         # raw u32 runtime-arg words to poke into L1
+    arg_offset: int = 0       # starting runtime-arg index
+    index: int | None = None  # launch-ring entry (default = active)
+
+
+class TensixGoRequest(BaseModel):
+    x: int
+    y: int
+    signal: int | None = None  # go_msg signal byte (default GO=0x80)
+
+
+class TensixLoopRequest(BaseModel):
+    x: int
+    y: int
+    on: bool = True            # start (true) or stop (false) the re-go loop
+    hz: int = 10               # re-go rate (1..50); kernel re-runs each tick
+    force: bool = False        # allow looping a dispatch-infra core
+
+
+# ---- resident bootloader cockpit (hot-swap code overlays over exalens) ----
+class TensixBlParamRequest(BaseModel):
+    x: int
+    y: int
+    index: int                 # PARAM index (0..3)
+    value: int                 # u32 to poke
+
+class TensixBlStageRequest(BaseModel):
+    x: int
+    y: int
+    overlay: str               # overlay name from the registry (tensix.overlays)
+    slot: str = "A"
+
+class TensixBlExecRequest(BaseModel):
+    x: int
+    y: int
+    slot: str = "A"
+    wait: bool = True
+    timeout: float = 5.0
+    force: bool = False        # allow exec of a 'wedges'-verified overlay
+
+class TensixBlHaltRequest(BaseModel):
+    x: int
+    y: int
+
+class TensixBlCompileRequest(BaseModel):
+    name: str                  # overlay name (sanitized server-side)
+    source: str                # C source for the overlay's run(ctrl)
+
+class TensixBlSourceRequest(BaseModel):
+    name: str
+    source: str
+
+class TensixBlLaunchRequest(BaseModel):
+    grid: str = "2x2"          # WxH block of workers, or "all"
+
+
+class LlkBuildRequest(BaseModel):
+    name: str                  # LLK perf kernel folder name (from /api/tensix/llk)
+    run_type: str | None = None  # PERF_RUN_TYPE (MATH_ISOLATE/…); None = kernel default
+
+
+class LlkRunRequest(BaseModel):
+    name: str                  # LLK perf kernel to build (if needed) + load + run
+    x: int                     # noc0 coords of the Tensix worker to run on
+    y: int
+    tile_cnt: int = 16         # RuntimeParams TILE_CNT (tiles to process)
+    timeout: float = 5.0       # seconds to poll the mailboxes for KERNEL_COMPLETE
+    run_type: str | None = None  # PERF_RUN_TYPE isolation mode; None = kernel default

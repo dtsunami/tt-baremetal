@@ -7,9 +7,9 @@
   import { fmtBW } from './lib/api.js'
 
   const routes = {
-    '/': Chip,
+    '/': Chip,                     // chip floorplan (NoC explorer)
     '/tile/:x/:y': TileDetail,
-    '/rv': DeviceBrowser,
+    '/rv': DeviceBrowser,          // RV Kernels: tensix Bootloader cockpit lives here (TensixObserve)
   }
 
   $: mode = $frame?.mode ?? '—'

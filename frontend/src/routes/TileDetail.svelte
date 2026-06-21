@@ -1,6 +1,7 @@
 <script>
   import { getJSON, fmtBW, tileKey } from '../lib/api.js'
   import { frame } from '../lib/stores.js'
+  import TensixLaunch from '../lib/TensixLaunch.svelte'
 
   export let params = {}
   $: x = +params.x
@@ -74,6 +75,10 @@
       </div>
     {:else}
       <div class="panel muted">Management tile — never polled (NoC0 hang hazard).</div>
+    {/if}
+
+    {#if detail.kind === 'tensix'}
+      <TensixLaunch {x} {y} />
     {/if}
 
     {#if detail.dram_affinity}

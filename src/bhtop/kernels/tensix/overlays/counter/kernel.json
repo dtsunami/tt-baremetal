@@ -1,0 +1,12 @@
+{
+  "kind": "overlay",
+  "title": "Counter",
+  "engine": "BRISC int",
+  "experimental": false,
+  "verified": "ok",
+  "desc": "Integer-pipe spin loop. The 'hello world' — proves stage/exec + cycle telemetry.",
+  "params": [
+    { "i": 0, "name": "iters", "default": 1000000, "desc": "loop iterations" }
+  ],
+  "derived": [ { "name": "iter/cyc", "expr": "work/cycles" } ]
+}

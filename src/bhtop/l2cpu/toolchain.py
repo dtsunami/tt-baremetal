@@ -108,9 +108,9 @@ def _defmap(base, defines=None):
     return m
 
 
-def _gcc_cmd(elf, base, lang, path, defines=None):
+def _gcc_cmd(elf, base, lang, path, defines=None, march="rv64gc"):
     defs = _defmap(base, defines)                            # canonical map + per-kernel overrides
-    cmd = [tool("gcc"), "-march=rv64gc", "-mabi=lp64d", "-nostdlib", "-nostartfiles",
+    cmd = [tool("gcc"), f"-march={march}", "-mabi=lp64d", "-nostdlib", "-nostartfiles",
            "-fno-pic", f"-T{LINK_LD}", f"-Wl,--defsym=LOAD_ADDR={base:#x}",
            "-Wl,--no-relax", "-o", elf]
     if lang == "c":
@@ -131,14 +131,14 @@ def _rustc_cmd(elf, base, path):
             "-C", "link-arg=--no-relax", "-o", elf, path]
 
 
-def _build_elf(path, elf, base, lang, defines=None):
+def _build_elf(path, elf, base, lang, defines=None, march="rv64gc"):
     """Compile any supported language to a position-fixed ELF at `elf`."""
     if lang not in ("asm", "c", "rust"):
         raise ToolError(f"unknown language for {path} (use .s/.c/.rs or pass lang=)")
     if lang in ("asm", "c"):
         if not have_gcc():
             raise ToolError(f"sfpi gcc not found at {SFPI} — is tt-metal present?")
-        _run(_gcc_cmd(elf, base, lang, path, defines))
+        _run(_gcc_cmd(elf, base, lang, path, defines, march=march))
     else:
         if not have_rust():
             raise ToolError(
@@ -149,22 +149,23 @@ def _build_elf(path, elf, base, lang, defines=None):
         _run(_rustc_cmd(elf, base, path), env=_rust_env(mapf))
 
 
-def compile_source(path, base=DEFAULT_BASE, lang=None, defines=None):
+def compile_source(path, base=DEFAULT_BASE, lang=None, defines=None, march="rv64gc"):
     """Compile `path` to a flat image linked at `base`. Returns list[u32 words].
-    `defines` (name->int|hex-str) are injected on top of the canonical map (kernel wins)."""
+    `defines` (name->int|hex-str) are injected on top of the canonical map (kernel wins).
+    `march` overrides the ISA string (use 'rv64gcv' for kernels with RVV intrinsics)."""
     lang = lang or detect_lang(path)
     with tempfile.TemporaryDirectory() as d:
         elf = os.path.join(d, "a.elf")
         binf = os.path.join(d, "a.bin")
-        _build_elf(path, elf, base, lang, defines)
+        _build_elf(path, elf, base, lang, defines, march=march)
         _objcopy(elf, binf)
         return _to_words(binf)
 
 
-def disasm(path, base=DEFAULT_BASE, lang=None, defines=None):
+def disasm(path, base=DEFAULT_BASE, lang=None, defines=None, march="rv64gc"):
     """Compile and return objdump disassembly (works for asm/C/Rust alike)."""
     lang = lang or detect_lang(path)
     with tempfile.TemporaryDirectory() as d:
         elf = os.path.join(d, "a.elf")
-        _build_elf(path, elf, base, lang, defines)
+        _build_elf(path, elf, base, lang, defines, march=march)
         return _run([tool("objdump"), "-d", elf], check=False)[1]

@@ -1,0 +1,15 @@
+{
+  "kind": "overlay",
+  "title": "Vector / SFPU",
+  "engine": "Tensix SFPU (vector)",
+  "experimental": true,
+  "verified": "untested",
+  "desc": "Seeds vector regs then loops SFPMAD (32-lane FMA) via the instruction buffer to drive the VECTOR unit. Gated — likely needs backend init; expert use only.",
+  "params": [
+    { "i": 0, "name": "mads", "default": 100000, "desc": "SFPMADs to issue" }
+  ],
+  "derived": [
+    { "name": "FMA/cyc", "expr": "work/cycles" },
+    { "name": "FLOP/cyc", "expr": "work*64/cycles" }
+  ]
+}

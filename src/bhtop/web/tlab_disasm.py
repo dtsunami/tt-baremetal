@@ -12,7 +12,9 @@ Falls back to the newest-by-mtime cache dir when no Inspector dump exists. File-
 host-side — no device ownership, doesn't fight the poller.
 """
 import os
+import shutil
 import subprocess
+from glob import glob
 
 from . import inspector
 
@@ -88,3 +90,51 @@ def fetch_last():
                 "disasm": _objdump(elfs[role]) if role in elfs else ""}
                for role, _, label in ENGINES]
     return {"ok": True, "kernel": kname, "program_id": pid, "engines": engines}
+
+
+def fetch_build_log():
+    """The VERBOSE JIT compiler output of the last compute run, per kernel/engine. tt-metal
+    compiles each kernel into <hash>/<risc>/ and writes the riscv-g++ command + warnings/errors to
+    *.o.log (compile) and *.elf.log (link) there. We surface those + the SOURCE path each kernel
+    was compiled from (so you can confirm the run read the file you edited)."""
+    pid, kernels = inspector.latest_user_program()
+    if not kernels:
+        elfs, name = _fallback_elfs()
+        if not elfs:
+            return {"ok": False, "error": "no JIT build yet — Run a compute example first."}
+        d = os.path.dirname(os.path.dirname(next(iter(elfs.values()))))
+        kernels = [{"name": name, "source": "(unknown — no Inspector dump)", "path": d}]
+    out = []
+    for k in sorted(kernels, key=lambda k: k.get("name", "")):
+        d = (k.get("path") or "").rstrip("/")
+        logs = sorted(glob(os.path.join(d, "*", "*.log")))
+        chunks = []
+        for lg in logs:
+            try:
+                body = open(lg, encoding="utf-8", errors="replace").read().strip()
+            except OSError:
+                body = "(unreadable)"
+            chunks.append(f"# {os.path.relpath(lg, d)}\n{body or '(clean — no warnings/errors)'}")
+        out.append({"name": k.get("name"), "source": k.get("source"),
+                    "hash": os.path.basename(d), "path": d,
+                    "log": "\n\n".join(chunks) or "(no build logs — kernel served from cache, not recompiled)"})
+    return {"ok": True, "program_id": pid, "kernels": out}
+
+
+def force_rebuild():
+    """Delete the cached build dirs of the last program's kernels so the NEXT Run JIT-recompiles
+    from source (proves your edit takes effect + gives fresh verbose logs). Filesystem-only."""
+    pid, kernels = inspector.latest_user_program()
+    if not kernels:
+        return {"ok": False, "error": "no program to rebuild — Run a compute example first."}
+    removed = []
+    for k in kernels:
+        d = (k.get("path") or "").rstrip("/")
+        if d and os.path.isdir(d) and CACHE in os.path.realpath(d):   # never escape the cache root
+            try:
+                shutil.rmtree(d)
+                removed.append(k.get("name"))
+            except OSError:
+                pass
+    return {"ok": True, "program_id": pid, "removed": removed,
+            "note": "cleared cached builds — the next Run will recompile these kernels from source"}

@@ -1,0 +1,62 @@
+{
+  "kind": "llk_perf",
+  "name": "eltwise_binary_sfpu_perf",
+  "title": "Eltwise Binary SFPU",
+  "family": "eltwise",
+  "engine": "tensix",
+  "build": "llk_lib",
+  "source": "eltwise_binary_sfpu_perf.cpp",
+  "desc": "LLK perf micro-benchmark (Eltwise Binary SFPU) \u2014 built on llk_lib, split across the Tensix compute threads (unpack\u2192math\u2192pack). Imported from tt-llk tests/sources.",
+  "trisc": {
+    "unpack": {
+      "llk_headers": [
+        "llk_unpack_A.h",
+        "llk_unpack_common.h"
+      ]
+    },
+    "math": {
+      "llk_headers": [
+        "llk_math_common.h",
+        "llk_math_eltwise_binary_sfpu.h",
+        "llk_math_eltwise_unary_datacopy.h"
+      ]
+    },
+    "pack": {
+      "llk_headers": [
+        "llk_lib_pack_wrappers.h",
+        "llk_pack_common.h"
+      ]
+    }
+  },
+  "defines": [
+    "BROADCAST_TYPE",
+    "PERF_RUN_TYPE",
+    "RUNTIME_FORMATS",
+    "SPEED_OF_LIGHT",
+    "is_fp32_dest_acc_en"
+  ],
+  "perf_run_types": [
+    "L1_CONGESTION",
+    "L1_TO_L1",
+    "MATH_ISOLATE",
+    "PACK_ISOLATE",
+    "UNPACK_ISOLATE"
+  ],
+  "default_run_type": "MATH_ISOLATE",
+  "telemetry": {
+    "kind": "perf_counters",
+    "zones": [
+      "INIT",
+      "TILE_LOOP"
+    ],
+    "banks": [
+      "INSTRN_THREAD",
+      "FPU",
+      "TDMA_UNPACK",
+      "TDMA_PACK",
+      "L1"
+    ],
+    "note": "elapsed cycles + event counts per zone; read from the L1 perf-counters region."
+  },
+  "upstream": "tt_metal/tt-llk/tests/sources/eltwise_binary_sfpu_perf.cpp"
+}

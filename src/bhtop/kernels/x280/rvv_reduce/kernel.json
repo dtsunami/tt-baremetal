@@ -1,0 +1,20 @@
+{
+  "title": "rvv_reduce",
+  "lang": "c",
+  "engine": "x280",
+  "doc": "rvv_reduce \u2014 horizontal reduction: vredsum collapses all 32 lanes to one scalar (the dot-product",
+  "sources": [
+    "rvv_reduce.c"
+  ],
+  "params": [],
+  "src_map": null,
+  "telemetry": {
+    "0": "samples",
+    "1": "ops/win",
+    "2": "mcyc/op",
+    "3": "result",
+    "4": "minstr/op",
+    "62": "cycles",
+    "63": "retired"
+  }
+}

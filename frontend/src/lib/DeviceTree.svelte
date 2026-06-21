@@ -19,7 +19,31 @@
   ENGINES.forEach((e) => st[e.key] = { open: false, sel: null, options: [], files: [],
                                        tree: [], treeOpen: {}, available: true, error: null, loading: false })
 
-  onMount(() => { ENGINES.forEach(initSection) })
+  // Bootloader overlays surface as first-class items at the top of the TENSIX section (the tt-metal
+  // examples below are subdued). Clicking one drives the bootloader cockpit (no file to open).
+  let blOverlays = []
+  const selectOverlay = (o) => dispatch('select', { engine: 'tensix', key: 'bl:' + o.name, name: o.title, overlay: o.name })
+
+  // LLK perf kernels (tt-llk *_perf.cpp, built on llk_lib) — first-class under TENSIX next to the
+  // overlays. Clicking one opens its source in the editor (read-tagged; built via build.sh).
+  let llkKernels = []
+  const selectLlk = (k) => dispatch('select', { engine: 'tensix', key: 'llk:' + k.name, name: k.title, llk: k.name })
+  // collapsible TENSIX sub-sections (overlays / LLK kernels) + per-family LLK groups
+  let secOpen = { bl: true, llk: true, metal: false }   // metal examples folded by default (long list)
+  let famOpen = {}
+  const FAM_ORDER = ['eltwise', 'matmul', 'reduce', 'pack', 'unpack', 'transpose', 'other']
+  $: llkFamilies = (() => {
+    const by = {}
+    for (const k of llkKernels) (by[k.family || 'other'] ||= []).push(k)
+    return FAM_ORDER.filter((f) => by[f]).map((f) => [f, by[f]])
+  })()
+
+  onMount(async () => {
+    ENGINES.forEach(initSection)
+    st.tensix.open = true                                  // open TENSIX by default so overlays show
+    try { blOverlays = (await getJSON('/api/tensix/bl/overlays')).overlays || [] } catch (e) {}
+    try { llkKernels = (await getJSON('/api/tensix/llk')).kernels || [] } catch (e) {}
+  })
 
   async function initSection(eng) {
     if (eng.treeUrl) return loadTree(eng)
@@ -170,13 +194,62 @@
           {#if eng.inPlaceNote}<span class="op note" title={eng.inPlaceNote}>edits in place ⓘ</span>{/if}
         </div>
 
+        {#if eng.key === 'tensix' && blOverlays.length}
+          <button class="blhd tog" on:click={() => secOpen.bl = !secOpen.bl}>
+            <span class="caret">{secOpen.bl ? '▾' : '▸'}</span> ⚡ bootloader overlays <span class="cnt">{blOverlays.length}</span>
+          </button>
+          {#if secOpen.bl}
+            <ul class="bllist">
+              {#each blOverlays as o}
+                <li class="row"><button class="file" on:click={() => selectOverlay(o)} title={o.desc}>
+                  <span class="live" class:off={!o.built}></span>
+                  <span class="fn">{o.title}</span>
+                  <span class="vb {o.verified}">{o.verified}</span>
+                </button></li>
+              {/each}
+            </ul>
+          {/if}
+        {/if}
+        {#if eng.key === 'tensix' && llkKernels.length}
+          <button class="blhd tog" on:click={() => secOpen.llk = !secOpen.llk}>
+            <span class="caret">{secOpen.llk ? '▾' : '▸'}</span> 🧮 LLK perf kernels <span class="subnote">on llk_lib</span> <span class="cnt">{llkKernels.length}</span>
+          </button>
+          {#if secOpen.llk}
+            {#each llkFamilies as [fam, ks]}
+              <button class="famhd" on:click={() => famOpen[fam] = famOpen[fam] === false}>
+                <span class="caret">{famOpen[fam] === false ? '▸' : '▾'}</span> {fam} <span class="cnt">{ks.length}</span>
+              </button>
+              {#if famOpen[fam] !== false}
+                <ul class="bllist fam">
+                  {#each ks as k}
+                    <li class="row" class:active={activeKey === 'llk:' + k.name}>
+                      <button class="file" on:click={() => selectLlk(k)} title={k.buildable === false ? k.title + ' — needs a per-variant build.h' : k.desc}>
+                        <span class="bdot {k.buildable === false ? 'warn' : 'ok'}" title={k.buildable === false ? 'needs per-variant build.h' : 'builds with default build.h'}></span>
+                        <span class="fn">{k.title}</span>
+                        <span class="llkthreads" title="threads: {Object.keys(k.trisc || {}).join(', ')}">{Object.keys(k.trisc || {}).map((t) => t[0].toUpperCase()).join('')}</span>
+                      </button>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            {/each}
+          {/if}
+        {/if}
+        {#if eng.key === 'tensix'}
+          <button class="blhd sub tog" on:click={() => secOpen.metal = !secOpen.metal}>
+            <span class="caret">{secOpen.metal ? '▾' : '▸'}</span> tt-metal examples <span class="subnote">subdued</span>
+          </button>
+        {/if}
+
         {#if s.error}<div class="err">{s.error}</div>{/if}
         {#if s.available === false}
           <div class="dim pad">unavailable — {eng.key === 'x280' ? 'no L2CPU workspace' : 'tt-metal not found'}</div>
         {:else if eng.treeUrl}
-          {#if !s.tree.length}<div class="dim pad">{s.loading ? 'loading…' : 'no kernels'}</div>
+          {#if eng.key === 'tensix' && !secOpen.metal}
+            <!-- metal examples folded -->
+          {:else if !s.tree.length}<div class="dim pad">{s.loading ? 'loading…' : 'no kernels'}</div>
           {:else}
-            <div class="kt-wrap">
+            <div class="kt-wrap" class:subdued={eng.key === 'tensix'}>
               <KernelTree nodes={s.tree} {eng} {activeKey} {running} open={st[eng.key].treeOpen}
                           onSelect={treeSelect(eng)} onFileOp={treeFileOp(eng)} onFolderOp={treeFolderOp(eng)} />
             </div>
@@ -257,4 +330,31 @@
   .mini.del:hover { color: var(--bad); }
   .pad { padding: 4px 12px; } .dim { color: var(--muted); font-size: 11px; }
   .err { color: var(--bad); font-size: 11px; padding: 2px 12px; }
+
+  /* bootloader overlays — first-class at the top of TENSIX */
+  .blhd { font-size: 10px; font-weight: 700; letter-spacing: .04em; color: var(--good); text-transform: uppercase; padding: 6px 12px 2px; }
+  .blhd.sub { color: var(--muted); margin-top: 6px; border-top: 1px solid var(--line); padding-top: 8px; }
+  .subnote { font-weight: 400; text-transform: none; opacity: .7; }
+  .bllist { list-style: none; margin: 0; padding: 0 6px; }
+  .bllist .file { border-left: 2px solid var(--good); margin-left: 4px; }
+  .llkthreads { font-size: 8.5px; font-family: ui-monospace, monospace; color: #4fd6e0; border: 1px solid var(--line); border-radius: 3px; padding: 1px 4px; flex: none; }
+  .blhd.tog { display: flex; align-items: center; gap: 5px; width: 100%; background: none; border: none; cursor: pointer; font-family: inherit; text-align: left; }
+  .blhd.tog:hover { color: var(--fg); }
+  .blhd .caret { font-size: 9px; width: 9px; flex: none; }
+  .blhd .cnt, .famhd .cnt { margin-left: auto; font-weight: 400; opacity: .6; }
+  .famhd { display: flex; align-items: center; gap: 5px; width: 100%; background: none; border: none; cursor: pointer; font-family: inherit; text-align: left; color: var(--muted); font-size: 10.5px; padding: 3px 12px 2px 22px; text-transform: capitalize; }
+  .famhd:hover { color: var(--fg); }
+  .famhd .caret { font-size: 8px; width: 8px; flex: none; }
+  .bllist.fam { padding-left: 16px; }
+  .bdot { width: 7px; height: 7px; border-radius: 50%; flex: none; display: inline-block; }
+  .bdot.ok { background: var(--good); }
+  .bdot.warn { background: #d8a23a; }
+  .vb { font-size: 8.5px; padding: 1px 5px; border-radius: 3px; flex: none; text-transform: uppercase; border: 1px solid var(--line); color: var(--muted); }
+  .vb.ok { color: var(--good); border-color: var(--good); }
+  .vb.wedges { color: #e07a77; border-color: #c0504d; }
+  .vb.untested { color: #d8a23a; border-color: #d8a23a; }
+  .vb.custom { color: #4a90d8; border-color: #4a90d8; }
+  /* the tt-metal example tree is de-emphasized below the overlays */
+  .kt-wrap.subdued { opacity: .62; font-size: 11px; }
+  .kt-wrap.subdued:hover { opacity: 1; }
 </style>

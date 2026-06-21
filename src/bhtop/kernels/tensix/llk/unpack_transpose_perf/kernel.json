@@ -1,0 +1,58 @@
+{
+  "kind": "llk_perf",
+  "name": "unpack_transpose_perf",
+  "title": "Unpack Transpose",
+  "family": "unpack",
+  "engine": "tensix",
+  "build": "llk_lib",
+  "source": "unpack_transpose_perf.cpp",
+  "desc": "LLK perf micro-benchmark (Unpack Transpose) \u2014 built on llk_lib, split across the Tensix compute threads (unpack\u2192math\u2192pack). Imported from tt-llk tests/sources.",
+  "trisc": {
+    "unpack": {
+      "llk_headers": [
+        "llk_unpack_A.h",
+        "llk_unpack_common.h"
+      ]
+    },
+    "math": {
+      "llk_headers": [
+        "llk_lib_math_wrappers.h"
+      ]
+    },
+    "pack": {
+      "llk_headers": [
+        "llk_lib_pack_wrappers.h",
+        "llk_pack_common.h"
+      ]
+    }
+  },
+  "defines": [
+    "PERF_RUN_TYPE",
+    "RUNTIME_FORMATS",
+    "SPEED_OF_LIGHT",
+    "is_fp32_dest_acc_en"
+  ],
+  "perf_run_types": [
+    "L1_CONGESTION",
+    "MATH_ISOLATE",
+    "PACK_ISOLATE",
+    "UNPACK_ISOLATE"
+  ],
+  "default_run_type": "UNPACK_ISOLATE",
+  "telemetry": {
+    "kind": "perf_counters",
+    "zones": [
+      "INIT",
+      "TILE_LOOP"
+    ],
+    "banks": [
+      "INSTRN_THREAD",
+      "FPU",
+      "TDMA_UNPACK",
+      "TDMA_PACK",
+      "L1"
+    ],
+    "note": "elapsed cycles + event counts per zone; read from the L1 perf-counters region."
+  },
+  "upstream": "tt_metal/tt-llk/tests/sources/unpack_transpose_perf.cpp"
+}

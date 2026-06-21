@@ -52,6 +52,7 @@ def _env(dprint_cores=None):
     e["TT_METAL_DEVICE_PROFILER"] = "1"
     e["TT_METAL_INSPECTOR"] = "1"       # dump generated/inspector/*.yaml: kernel hash <-> source <-> program
     e.setdefault("TT_METAL_INSPECTOR_LOG_PATH", os.path.join(h, "generated", "inspector"))
+    e["TT_METAL_LOG_KERNELS_COMPILE_COMMANDS"] = "1"   # log "g++ compile/link cmd:" -> we capture the build recipe
     if dprint_cores:
         e["TT_METAL_DPRINT_CORES"] = dprint_cores   # on-device printf from kernels -> stdout
     return e
@@ -122,14 +123,78 @@ def compute_examples():
                   and any(k in n for k in keep))
 
 
-def run_example(name, timeout=900):
-    """Run a standalone compute programming_example by name (e.g.
-    'metal_example_add_2_integers_in_compute'). tt-metal owns + resets the device for the run
-    (so the L2CPU/x280 harts go back to reset). Returns (passed, combined stdout+stderr)."""
+def example_binaries():
+    """Every runnable programming-example binary -> abspath. Covers BOTH the flat top-level
+    `metal_example_*` and NESTED ones whose CMake puts them in a subdir with a non-prefixed name
+    (e.g. contributed/vecadd, contributed/multicast). Keyed by basename; nested also by relpath
+    ('contributed/vecadd') so either form resolves."""
     d = examples_dir()
-    p = os.path.join(d, os.path.basename(name)) if d else None
-    if not p or not os.path.exists(p):
-        raise RuntimeError(f"compute example not found: {name}")
+    out = {}
+    if not d:
+        return out
+    for dp, dirs, names in os.walk(d):
+        dirs[:] = [x for x in dirs if x != "CMakeFiles" and not x.startswith(".")]
+        rel = "" if dp == d else os.path.relpath(dp, d)
+        if rel.count(os.sep) > 2:                       # examples nest at most a couple levels
+            dirs[:] = []
+            continue
+        for n in names:
+            if "." in n:                                # real binaries are extension-less
+                continue
+            p = os.path.join(dp, n)
+            if not (os.path.isfile(p) and os.access(p, os.X_OK)):
+                continue
+            if dp == d:                                 # flat top-level metal_example_*
+                out[n] = p
+            elif n.startswith("metal_example_") or _is_example_source(rel, n):
+                out.setdefault(n, p)                    # nested: by basename ...
+                out.setdefault(os.path.join(rel, n), p)  # ... and by relpath
+    return out
+
+
+def _is_example_source(rel, n):
+    """True if a nested binary `n` (in build subdir `rel`) maps to a real example — its source dir
+    `programming_examples/<rel>/<n>/` has a kernels/ subdir (e.g. contributed/vecadd/kernels)."""
+    h = metal_home()
+    if not h:
+        return False
+    src = os.path.join(h, "tt_metal", "programming_examples", rel, n)
+    return os.path.isdir(os.path.join(src, "kernels"))
+
+
+def example_names():
+    """Sorted names runnable via run_example(): top-level metal_example_* + nested basenames."""
+    return sorted(k for k in example_binaries() if os.sep not in k)
+
+
+def _find_example(name):
+    """Resolve an example name to its binary, tolerating the metal_example_ prefix and nesting.
+    Accepts 'vecadd', 'metal_example_vecadd', 'contributed/vecadd', or a full top-level name."""
+    bins = example_binaries()
+    base = os.path.basename(name)
+    for cand in (name, base, base.replace("metal_example_", ""), "metal_example_" + base):
+        if cand in bins:
+            return bins[cand]
+    return None
+
+
+def _container_examples(name):
+    """If `name` is a container dir (e.g. 'contributed') holding several runnable sub-examples,
+    the sub-example names — so the error can say 'run vecadd or multicast' instead of 'not found'."""
+    base = os.path.basename(name).replace("metal_example_", "")
+    return sorted({k.split(os.sep)[-1] for k in example_binaries()
+                   if os.sep in k and k.split(os.sep)[0] == base})
+
+
+def run_example(name, timeout=900):
+    """Run a standalone programming_example by name (e.g. 'metal_example_add_2_integers_in_compute',
+    or a nested 'vecadd'/'multicast'). tt-metal owns + resets the device for the run (so the
+    L2CPU/x280 harts go back to reset). Returns (passed, combined stdout+stderr)."""
+    p = _find_example(name)
+    if not p:
+        subs = _container_examples(name)
+        hint = f" — it's a container of {len(subs)} examples; run one of: {', '.join(subs)}" if subs else ""
+        raise RuntimeError(f"compute example not found: {name}{hint}")
     # fresh CSV so we only see this run's zones
     c = profiler_csv()
     if c and os.path.exists(c):

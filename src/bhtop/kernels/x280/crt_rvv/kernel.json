@@ -1,0 +1,22 @@
+{
+  "title": "crt_rvv",
+  "lang": "c",
+  "engine": "x280",
+  "doc": "crt_x280_rvv.c \u2014 RVV version of the CRT/quarter-square 32x32 int8 matmul on the SiFive x280.",
+  "sources": [
+    "crt_rvv.c"
+  ],
+  "params": [],
+  "src_map": null,
+  "telemetry": {
+    "0": "heartbeat",
+    "1": "checksum",
+    "2": "cycles",
+    "3": "C[0][0]",
+    "4": "C[1][2]",
+    "5": "C[15][15]",
+    "6": "C[31][31]",
+    "7": "instret",
+    "8": "build(1=scal,2=rvv)"
+  }
+}

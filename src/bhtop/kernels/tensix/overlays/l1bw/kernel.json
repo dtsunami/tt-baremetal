@@ -1,0 +1,17 @@
+{
+  "kind": "overlay",
+  "title": "L1 bandwidth",
+  "engine": "BRISC load/store",
+  "experimental": false,
+  "verified": "ok",
+  "desc": "Copies a scratch buffer src→dst REPS times. Shows L1 bytes/cycle (×clock = GB/s).",
+  "params": [
+    { "i": 0, "name": "words", "default": 4096, "desc": "words/buffer (≤4096 = 16 KiB)" },
+    { "i": 1, "name": "reps", "default": 2000, "desc": "repetitions" }
+  ],
+  "telemetry_extra": [
+    { "slot": 4, "name": "words", "kind": "int", "desc": "words per copy" },
+    { "slot": 5, "name": "reps", "kind": "int", "desc": "repetitions" }
+  ],
+  "derived": [ { "name": "B/cyc", "expr": "work*8/cycles" } ]
+}

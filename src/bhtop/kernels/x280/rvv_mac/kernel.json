@@ -1,0 +1,20 @@
+{
+  "title": "rvv_mac",
+  "lang": "c",
+  "engine": "x280",
+  "doc": "rvv_mac \u2014 fused multiply-accumulate: acc += a*b per lane (vmacc.vv) = 32 MACs per instruction,",
+  "sources": [
+    "rvv_mac.c"
+  ],
+  "params": [],
+  "src_map": null,
+  "telemetry": {
+    "0": "samples",
+    "1": "ops/win",
+    "2": "mcyc/op",
+    "3": "result",
+    "4": "minstr/op",
+    "62": "cycles",
+    "63": "retired"
+  }
+}

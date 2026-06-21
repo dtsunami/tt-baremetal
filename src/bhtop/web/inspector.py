@@ -161,6 +161,17 @@ def latest_user_program(snap=None):
     return pid, [k for k in user if k["program_id"] == pid]
 
 
+def by_watcher_id(snap=None):
+    """watcher_kernel_id -> kernel dict {name, source, basename, hash, path, program_id, role, infra}.
+
+    This is the join key the device uses: a Tensix launch_msg carries watcher_kernel_ids[proc],
+    so reading those off a core and looking them up here tells you WHICH kernel (name/source/build
+    hash) is loaded on each engine of that core. Returns {} when no Inspector dump exists yet."""
+    snap = snap or read()
+    return {k["watcher_kernel_id"]: k for k in snap.get("kernels", [])
+            if k.get("watcher_kernel_id") is not None}
+
+
 def engine_elfs(kernels):
     """role -> elf path, assembled ACROSS a program's kernel dirs (compute dir holds the trisc
     ELFs; the reader/writer DM kernels live in their own ncrisc/brisc dirs). Missing engines

@@ -20,7 +20,11 @@ from .schemas import (InjectRequest, KernelRunRequest, LabWriteRequest,
                       L2CompileRequest, L2TileRequest, L2WriteRequest,
                       L2NewRequest, L2PokeRequest, L2CommandRequest, L2FreqRequest,
                       L2FolderRequest, L2ParamsRequest, KernelConfigRequest,
-                      KernelMergeRequest, TlabRunRequest, CopyRequest)
+                      KernelMergeRequest, TlabRunRequest, TlabExampleRequest, CopyRequest,
+                      TensixRtaRequest, TensixGoRequest, TensixLoopRequest,
+                      TensixBlParamRequest, TensixBlStageRequest, TensixBlExecRequest,
+                      TensixBlHaltRequest, TensixBlCompileRequest, TensixBlSourceRequest,
+                      TensixBlLaunchRequest, LlkBuildRequest, LlkRunRequest)
 from ..patterns import PATTERN_INFO
 
 app = FastAPI(title="bhtop-web")
@@ -57,6 +61,129 @@ async def tile(x: int, y: int):
     if d is None:
         raise HTTPException(404, f"no tile at noc0 ({x},{y})")
     return d
+
+
+# ---- Tensix launch cockpit: read/poke a worker's runtime args in L1 + re-go ----
+@app.get("/api/tensix/launch")
+async def tensix_launch(x: int, y: int, index: int | None = None):
+    try:
+        return await dm.tensix_launch(x, y, index)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/tensix/rta")
+async def tensix_rta(req: TensixRtaRequest):
+    try:
+        return await dm.tensix_write_rta(req.x, req.y, req.proc, req.values, req.arg_offset, req.index)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/tensix/go")
+async def tensix_go(req: TensixGoRequest):
+    try:
+        return await dm.tensix_go(req.x, req.y, req.signal)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/tensix/peek")
+async def tensix_peek(x: int, y: int, addr: int, n: int = 8):
+    try:
+        return await dm.tensix_peek(x, y, addr, n)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/tensix/scan")
+async def tensix_scan():
+    return await dm.tensix_scan()
+
+
+@app.post("/api/tensix/loop")
+async def tensix_loop(req: TensixLoopRequest):
+    try:
+        return await dm.tensix_loop(req.x, req.y, req.on, req.hz, req.force)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/tensix/loop")
+async def tensix_loop_status():
+    return dm.tensix_loop_status()
+
+
+# ---- resident bootloader cockpit: deploy + hot-swap code overlays, live telemetry ----
+@app.get("/api/tensix/bl/overlays")
+async def tensix_bl_overlays():
+    return dm.tensix_bl_overlays()
+
+@app.get("/api/tensix/bl/scan")
+async def tensix_bl_scan():
+    return await dm.tensix_bl_scan()
+
+@app.get("/api/tensix/bl/status")
+async def tensix_bl_status(x: int, y: int):
+    try:
+        return await dm.tensix_bl_status(x, y)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+@app.post("/api/tensix/bl/param")
+async def tensix_bl_param(req: TensixBlParamRequest):
+    try:
+        return await dm.tensix_bl_param(req.x, req.y, req.index, req.value)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+@app.post("/api/tensix/bl/stage")
+async def tensix_bl_stage(req: TensixBlStageRequest):
+    try:
+        return await dm.tensix_bl_stage(req.x, req.y, req.overlay, req.slot)
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(400, str(e))
+
+@app.post("/api/tensix/bl/exec")
+async def tensix_bl_exec(req: TensixBlExecRequest):
+    try:
+        return await dm.tensix_bl_exec(req.x, req.y, req.slot, req.wait, req.timeout, req.force)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+@app.post("/api/tensix/bl/halt")
+async def tensix_bl_halt(req: TensixBlHaltRequest):
+    try:
+        return await dm.tensix_bl_halt(req.x, req.y)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+@app.post("/api/tensix/bl/compile")
+async def tensix_bl_compile(req: TensixBlCompileRequest):
+    return await dm.tensix_bl_compile(req.name, req.source)
+
+@app.get("/api/tensix/bl/source")
+async def tensix_bl_source(name: str):
+    try:
+        return dm.tensix_bl_source(name)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+
+@app.post("/api/tensix/bl/source")
+async def tensix_bl_save_source(req: TensixBlSourceRequest):
+    return await dm.tensix_bl_save_source(req.name, req.source)
+
+@app.get("/api/tensix/bl/launch")
+async def tensix_bl_launch_status():
+    return dm.bl_launch_status()
+
+@app.post("/api/tensix/bl/launch")
+async def tensix_bl_launch(req: TensixBlLaunchRequest):
+    return await dm.tensix_bl_launch(req.grid)
+
+@app.post("/api/tensix/bl/launch/stop")
+async def tensix_bl_launch_stop():
+    return await dm.tensix_bl_launch_stop()
 
 
 @app.get("/api/inject/patterns")
@@ -122,6 +249,37 @@ async def tlab_status():
 @app.get("/api/tlab/disasm")
 async def tlab_disasm():
     return await dm.tlab_disasm()
+
+
+@app.get("/api/tlab/buildlog")
+async def tlab_buildlog():
+    return await dm.tlab_build_log()
+
+
+@app.post("/api/tlab/rebuild")
+async def tlab_rebuild():
+    return await dm.tlab_rebuild()
+
+
+@app.get("/api/tlab/recipe")
+async def tlab_recipe(example: str):
+    return await dm.tlab_recipe(example)
+
+
+@app.post("/api/tlab/extract")
+async def tlab_extract(req: TlabExampleRequest):
+    try:
+        return await dm.tlab_extract(req.example)
+    except (ValueError, OSError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/tlab/build")
+async def tlab_build_standalone(req: TlabExampleRequest):
+    try:
+        return await dm.tlab_build_standalone(req.example)
+    except (ValueError, OSError) as e:
+        raise HTTPException(400, str(e))
 
 
 @app.get("/api/running")
@@ -389,6 +547,65 @@ async def isa_doc(path: str):
         raise HTTPException(400, str(e))
     except Exception as e:
         raise HTTPException(502, f"ISA doc fetch failed: {e}")
+
+
+# ---- Tensix ISA (assembly.yaml): decoded opcodes + per-operand bit-fields for the cockpit's
+# instruction tooltips + searchable reference panel. Pure host (parsed + cached), no device. ----
+@app.get("/api/tensix/isa")
+async def tensix_isa():
+    from ..tensix import isa as tensix_isa_mod
+    return await asyncio.to_thread(tensix_isa_mod.load)
+
+
+@app.get("/api/tensix/isa/{mnemonic}")
+async def tensix_isa_one(mnemonic: str):
+    from ..tensix import isa as tensix_isa_mod
+    info = await asyncio.to_thread(tensix_isa_mod.one, mnemonic)
+    if not info:
+        raise HTTPException(404, f"unknown Tensix instruction {mnemonic!r}")
+    return info
+
+
+# ---- LLK perf kernels: tt-llk's tests/sources/*_perf.cpp, built on llk_lib, imported into
+# folder-per-kernel canon with per-thread (unpack/math/pack) metadata. Pure host (reads canon). ----
+@app.get("/api/tensix/llk")
+async def tensix_llk():
+    from ..tensix import llk
+    return await asyncio.to_thread(llk.load)
+
+
+@app.get("/api/tensix/llk/{name}")
+async def tensix_llk_source(name: str):
+    from ..tensix import llk
+    try:
+        return {"name": name, "source": await asyncio.to_thread(llk.source, name), "lang": "cpp"}
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.post("/api/tensix/llk/build")
+async def tensix_llk_build(req: LlkBuildRequest):
+    return await dm.llk_build(req.name, req.run_type)
+
+
+@app.get("/api/tensix/llk/{name}/disasm")
+async def tensix_llk_disasm(name: str):
+    return await dm.llk_disasm(name)
+
+
+@app.get("/api/tensix/bl/disasm")
+async def tensix_bl_disasm(name: str):
+    return await dm.overlay_disasm(name)
+
+
+@app.post("/api/tensix/llk/run")
+async def tensix_llk_run(req: LlkRunRequest):
+    if dm.reset_needed:
+        raise HTTPException(409, "NoC hang pending — run `tt-smi -r 0` and restart the server")
+    try:
+        return await dm.llk_run(req.name, req.x, req.y, req.tile_cnt, req.timeout, req.run_type)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.websocket("/ws/telemetry")
@@ -671,6 +888,31 @@ async def ws_l2cpu(websocket: WebSocket):
             tk.exception()                   # retrieve so it's not flagged unhandled
     finally:
         dm.l2_unsubscribe(q)
+
+
+@app.websocket("/ws/bootloader")
+async def ws_bootloader(websocket: WebSocket):
+    await websocket.accept()
+    q = await dm.bl_subscribe()
+
+    async def sender():
+        while True:
+            await websocket.send_json(await q.get())
+
+    async def receiver():                    # client picks the focused core + rate
+        while True:
+            msg = await websocket.receive_json()
+            dm.bl_select(msg.get("x"), msg.get("y"), msg.get("hz"))
+
+    tasks = [asyncio.create_task(sender()), asyncio.create_task(receiver())]
+    try:
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for tk in pending:
+            tk.cancel()
+        for tk in done:
+            tk.exception()
+    finally:
+        dm.bl_unsubscribe(q)
 
 
 # Serve the built frontend last so /api and /ws take precedence (only if built).

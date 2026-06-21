@@ -25,6 +25,7 @@
   let hb = { v: null, ts: null, rate: 0 }, regs = null, arch = null, lastDeploy = null, compileOut = null
   let tab = 'telem'
   let histFrames = [], plotSlot = 0, plotRate = false
+  let teleLabels = {}      // slot index -> label, from the active kernel's kernel.json `telemetry`
   let ws = null, wsAlive = false, reconnectT = null
   let tip = { show: false, x: 0, y: 0, text: '' }
 
@@ -41,7 +42,16 @@
   $: tele = teleByHart ? teleByHart[sel.hart] : null
   $: viewDeployed = deployed[sel.hart]
   $: slots = tele ? tele.map((v, i) => ({ i, v: v >>> 0, changed: (prevSlots[i] >>> 0) !== (v >>> 0) }))
-                      .filter((s) => s.v !== 0 || s.i === 0) : []
+                      .filter((s) => s.v !== 0 || s.i === 0 || teleLabels[s.i]) : []
+  // fetch the active kernel's per-slot telemetry labels (kernel.json `telemetry`)
+  $: loadTeleLabels(active?.engine === 'x280' ? active?.key : null)
+  async function loadTeleLabels(key) {
+    teleLabels = {}
+    if (!key) return
+    try { const r = await getJSON('/api/l2/config?key=' + encodeURIComponent(key)); teleLabels = (JSON.parse(r.json).telemetry) || {} }
+    catch (e) { teleLabels = {} }
+  }
+  $: plotLabel = teleLabels[plotSlot]
 
   onMount(async () => { await loadTiles(); connectWS() })
   onDestroy(() => { clearTimeout(reconnectT); ws?.close(); stopPower() })
@@ -258,7 +268,7 @@
       <div class="hbcard"><div class="hbnum">{hex(tele[0])}</div><div class="hbsub">hart {sel.hart} · slot 0 · <b>{fmtRate(hb.rate)}</b></div></div>
       <div class="tgrid">
         {#each slots as s (s.i)}
-          <div class="slot" class:changed={s.changed} class:hb={s.i === 0}><span class="si">{s.i}</span><span class="sv">{hex(s.v)}</span><span class="sd">{s.v}</span></div>
+          <div class="slot" class:changed={s.changed} class:hb={s.i === 0} class:labeled={teleLabels[s.i]}><span class="si">{s.i}</span><span class="sl">{teleLabels[s.i] || ''}</span><span class="sv">{hex(s.v)}</span><span class="sd">{s.v}</span></div>
         {/each}
       </div>
       <div class="obsfoot"><button on:click={zeroTele}>clear slots</button>
@@ -288,9 +298,13 @@
     <h4>Per-hart plot <span class="dim">· a slot over time, one line per hart</span></h4>
     <div class="plotctl">
       <label>slot <input type="number" min="0" max="63" bind:value={plotSlot} /></label>
-      <button class:on={plotSlot === 0} on:click={() => plotSlot = 0}>0 hb</button>
-      <button class:on={plotSlot === 63} on:click={() => plotSlot = 63}>63 retired</button>
-      <button class:on={plotSlot === 62} on:click={() => plotSlot = 62}>62 cycles</button>
+      {#if Object.keys(teleLabels).length}
+        {#each Object.entries(teleLabels) as [si, lbl]}<button class:on={plotSlot === +si} on:click={() => plotSlot = +si}>{si} {lbl}</button>{/each}
+      {:else}
+        <button class:on={plotSlot === 0} on:click={() => plotSlot = 0}>0 hb</button>
+        <button class:on={plotSlot === 63} on:click={() => plotSlot = 63}>63 retired</button>
+        <button class:on={plotSlot === 62} on:click={() => plotSlot = 62}>62 cycles</button>
+      {/if}
       <label class="rt"><input type="checkbox" bind:checked={plotRate} /> rate</label>
     </div>
     {#if plotSeries.some((s) => s.pts.length)}
@@ -298,7 +312,7 @@
         {#each plotSeries as s}{#if deployed[s.hart] || s.pts.some((p) => p.v)}<polyline points={plotPoints(s.pts)} style="fill:none;stroke:{HARTCOL[s.hart]};stroke-width:1.4" />{/if}{/each}
       </svg>
       <div class="plotlegend">{#each [0, 1, 2, 3] as h}<span class="lg" class:off={!deployed[h]}><i style="background:{HARTCOL[h]}"></i>H{h}{#if deployed[h]} · {deployed[h].name}{/if}</span>{/each}</div>
-      <div class="dim">y-max {plotRate ? fmtRate(plotMax) : hex(plotMax)} · {histFrames.length} samples · slot {plotSlot}{plotRate ? ' (Δ/s)' : ''}</div>
+      <div class="dim">y-max {plotRate ? fmtRate(plotMax) : hex(plotMax)} · {histFrames.length} samples · slot {plotSlot}{plotLabel ? ' (' + plotLabel + ')' : ''}{plotRate ? ' Δ/s' : ''}</div>
     {:else}<div class="dim pad">Collecting… deploy a kernel that writes slot {plotSlot}. For retired/sec per hart, deploy <b>perf.c</b> to all harts (slot 63), pick <b>63 retired</b> + <b>rate</b>.</div>{/if}
 
   {:else if tab === 'arch'}
@@ -454,10 +468,12 @@
   .hbnum { font-size: 26px; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
   .hbsub { font-size: 11px; color: var(--muted); margin-top: 3px; } .hbsub b { color: var(--good); }
   .tgrid { display: flex; flex-direction: column; gap: 2px; }
-  .slot { display: grid; grid-template-columns: 30px 1fr auto; align-items: baseline; gap: 8px; padding: 3px 7px; border-radius: 4px; border: 1px solid transparent; background: var(--panel); font-variant-numeric: tabular-nums; }
+  .slot { display: grid; grid-template-columns: 30px 84px 1fr auto; align-items: baseline; gap: 8px; padding: 3px 7px; border-radius: 4px; border: 1px solid transparent; background: var(--panel); font-variant-numeric: tabular-nums; }
   .slot.hb { border-color: rgba(255,138,76,0.4); }
   .slot.changed { background: rgba(79,214,224,0.13); border-color: rgba(79,214,224,0.35); }
+  .slot.labeled { border-color: rgba(120,170,255,0.28); }
   .slot .si { color: var(--muted); font-size: 11px; text-align: right; } .slot .sv { color: var(--fg); } .slot .sd { color: var(--muted); font-size: 11px; }
+  .slot .sl { color: #79aaff; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .obsfoot { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
   .obsfoot button { font-family: inherit; font-size: 11px; background: var(--panel2); color: var(--fg); border: 1px solid var(--line); border-radius: 5px; padding: 3px 9px; cursor: pointer; }
   .disasm { background: #0a0c10; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; overflow: auto; max-height: 440px; font-size: 11px; line-height: 1.65; font-family: ui-monospace, Menlo, Consolas, monospace; }

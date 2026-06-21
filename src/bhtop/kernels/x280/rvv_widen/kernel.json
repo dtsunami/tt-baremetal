@@ -1,0 +1,20 @@
+{
+  "title": "rvv_widen",
+  "lang": "c",
+  "engine": "x280",
+  "doc": "rvv_widen \u2014 widening multiply: vwmulu does u16*u16 -> u32 (output LMUL doubles to u32m2), the",
+  "sources": [
+    "rvv_widen.c"
+  ],
+  "params": [],
+  "src_map": null,
+  "telemetry": {
+    "0": "samples",
+    "1": "ops/win",
+    "2": "mcyc/op",
+    "3": "result",
+    "4": "minstr/op",
+    "62": "cycles",
+    "63": "retired"
+  }
+}

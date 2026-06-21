@@ -1,0 +1,13 @@
+{
+  "kind": "overlay",
+  "title": "Matrix / FPU",
+  "engine": "Tensix FPU (tile)",
+  "experimental": true,
+  "verified": "wedges",
+  "desc": "Spams MVMUL into the Tensix instruction buffer to drive the matrix engine. WEDGES the core without backend setup — gated; expert use only.",
+  "params": [
+    { "i": 0, "name": "mvmuls", "default": 100000, "desc": "MVMULs to issue" },
+    { "i": 1, "name": "clear_dvalid", "default": 3, "desc": "0..3; 3 avoids src-valid stalls" }
+  ],
+  "derived": [ { "name": "MVMUL/cyc", "expr": "work/cycles" } ]
+}
