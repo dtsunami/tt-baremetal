@@ -7,6 +7,10 @@
     .type  _start, @function
 _start:
     la      sp, __stack_top          # absolute (no-PIC, --no-relax)
+    li      t0, 0x6000               # mstatus.FS=Dirty: enable the FPU BEFORE main. The compiler may emit
+    csrs    mstatus, t0              # FP register saves (fsd) in a kernel's PROLOGUE, which run before
+                                     # main's body could enable FP; an FP-heavy kernel (opt_step) otherwise
+                                     # traps at its prologue store. Harmless (no-op effect) for int kernels.
     la      t0, __bss_start
     la      t1, __bss_end
 1:  bgeu    t0, t1, 2f               # zero bss (8-byte aligned by link.ld)

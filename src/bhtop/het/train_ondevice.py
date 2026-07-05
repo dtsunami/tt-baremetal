@@ -73,8 +73,10 @@ def main():
                            dLdpsi[1][2*i+1], dLdpsi[2][2*i+1],
                            dLdop[i], dLdcol[i][0], dLdcol[i][1], dLdcol[i][2]])
         bc1 = 1.0/(1-0.9**step); bc2 = 1.0/(1-0.999**step)
+        LR = [0.15,0.15,2e-3,2e-3,2e-3,0.02,0.1,0.1,0.1]              # per-param Adam LR (now host-supplied)
+        hdr = [K, step, fb(bc1), fb(bc2), fb(0.9), fb(0.999), fb(1e-8)] + [fb(x) for x in LR]
         dev.wr(0, 0x30005100, [fb(gradin[i][j]) for i in range(K) for j in range(9)])
-        dev.wr(0, 0x30005000, [K, step, fb(bc1), fb(bc2)])
+        dev.wr(0, 0x30005000, hdr)                                   # K,step,bc1,bc2,b1,b2,eps,lr[9]
         dev.wr(0, 0x30004000, [step])                                # ring x280
         for _ in range(60):
             if dev.rd(0, 0x30004010) == step: break

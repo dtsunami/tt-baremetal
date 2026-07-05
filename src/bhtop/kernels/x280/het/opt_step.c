@@ -8,7 +8,9 @@
  * and color grads are already leaf. Then Adam-update all 9 params of that Gaussian in place.
  *
  * GDDR layout (uncached open window):
- *   0x30005000 hdr : [K:int, step:int, bc1:f32, bc2:f32]   (bc = 1/(1-beta^t) bias corrections)
+ *   0x30005000 hdr : [K:int, step:int, bc1:f32, bc2:f32, b1:f32, b2:f32, eps:f32, lr[9]:f32]
+ *                    bc = 1/(1-beta^t) bias corrections; lr[9] = per-param Adam LR (gx,gy,a,b,c,op,c0,c1,c2).
+ *                    All hyperparameters are host-supplied per step so schedules/decay need no rebuild.
  *   0x30005040 order[K] : int (sorted slot -> original id)
  *   0x30005100 gradin[K*9] : f32, SORTED order, per slot [d_sa,d_m12,d_tx,d_m22,d_ty,dLdop,dc0,dc1,dc2]
  *   0x30005800 param[K*9]  : f32, ORIGINAL order, per Gaussian [gx,gy,a,b,c,op,c0,c1,c2]  (RESIDENT)
@@ -31,9 +33,6 @@ int main(void){
     volatile float *v      = (volatile float *)0x30006400u;
     volatile uint32_t *db  = (volatile uint32_t *)0x30004000u;       /* doorbell (host -> hart) */
     volatile uint32_t *done= (volatile uint32_t *)0x30004010u;       /* done   (hart -> host)  */
-    const float b1=0.9f, b2=0.999f, eps=1e-8f;
-    /* per-param Adam lr: gx,gy,a,b,c,op,c0,c1,c2 */
-    const float lr[9]={0.15f,0.15f,2e-3f,2e-3f,2e-3f,0.02f,0.1f,0.1f,0.1f};
     done[0] = 0; TELE[0] = 0x4F505421u;    /* 'OPT!' resident, waiting */
 
     uint32_t last = 0;
@@ -42,6 +41,8 @@ int main(void){
       if(ring == last) continue;                                     /* wait for the next step */
       int   K   = hdr[0]; if(K>16) K=16;
       float bc1 = hdrf[2], bc2 = hdrf[3];
+      float b1  = hdrf[4], b2  = hdrf[5], eps = hdrf[6];             /* host-supplied hyperparams */
+      const volatile float *lr = &hdrf[7];                          /* lr[9]: gx,gy,a,b,c,op,c0,c1,c2 */
       for(int i=0;i<K;i++){
         int o = order[i]; if(o<0||o>=K) continue;
         volatile float *gs = gin + i*9;                              /* sorted grads for this slot */
