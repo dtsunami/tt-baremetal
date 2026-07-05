@@ -385,12 +385,18 @@ def render_ondevice(coord, *, ctx, device_id=0, k=16, size=16, seed=5, order=Non
     Cg   = (mm_ring(w, ring[5], color, 3) if ring else mm_all(w, color, 3))        # 11 @ color -> RGB
 
     rgb = [row for g in Cg for row in g]                     # [size*size][3]
-    w_flat = [row for grp in w for row in grp]               # [size*size][K] transmittance·alpha (for backward)
+    _flat = lambda gg: [row for grp in gg for row in grp]
+    w_flat     = _flat(w)                                    # [P][K]  transmittance·alpha
+    alpha_flat = _flat(alpha)                                # [P][K]  alpha = op·ar (composite backward)
+    ar_flat    = _flat(ar)                                   # [P][K]  exp(E)  (dL/dE = dL/dalpha·op·ar)
+    v_flat     = _flat(V)                                    # [P][2K] whitened field v1,v2 interleaved
     gold = _golden_render(gs, size)
     mse = sum((rgb[p][ch] - gold[p][ch]) ** 2 for p in range(size*size) for ch in range(3)) / (size*size*3)
     psnr = 99.0 if mse < 1e-12 else 10.0 * math.log10(1.0 / mse)
     res = {"ok": psnr >= 40.0, "size": size, "gaussians": K, "groups": len(groups),
-           "psnr_db": psnr, "mse": mse, "rgb": rgb, "golden": gold, "w": w_flat, "coord": str(coord)}
+           "psnr_db": psnr, "mse": mse, "rgb": rgb, "golden": gold, "w": w_flat,
+           "alpha": alpha_flat, "ar": ar_flat, "v": v_flat, "order": list(order),
+           "gs": gs, "color": color, "coord": str(coord)}
     if verbose:
         print(f"[splat.ondevice] {size}x{size}, {K} Gaussians, {len(groups)} pixel-groups — "
               f"FULLY on-device (6 MVMUL + 5 SFPU stages, no host arithmetic)")
