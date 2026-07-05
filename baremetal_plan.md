@@ -14,7 +14,39 @@ cross-compiler.
 
 ---
 
-## ⏯ RESUME — START HERE (handoff, 2026-07-05)
+## ⏯ RESUME — START HERE (handoff, 2026-07-05 pm)
+
+**Session 2026-07-05 pm — promotion + on-device backward started:**
+- **POC promoted out of scratchpad into a TRACKED bhtop package** (was all untracked/at-risk). New homes:
+  `src/bhtop/het/` (drivers + `poc/` interview artifact), `src/bhtop/kernels/x280/het/` (x280 C kernels),
+  `src/bhtop/kernels/tensix/baremetal/` (Tensix cold-boot C canon). Harness in `src/bhtop/tensix/`
+  (`baremetal,matmul,sfpu,splat,llk,llk_run`). All committed. Smoke-tested on silicon post-promotion
+  (`het/hetero_splat.py` → 52.9 dB). See `src/bhtop/het/README.md`.
+- **NEW harness cap: FPU eltwise-binary** `sfpu.run_binary` (add/sub/mul via `eltwise_binary_fpu_perf` +
+  `ELTWISE_BINARY_OP` override). Silicon-verified add/sub 3.6e-3, mul 7.0e-3. **MUL needs HiFi4** (bf16
+  mantissa multiply truncates under LoFi → 3e-2); add/sub DON'T compile under HiFi4 → fidelity is op-dependent.
+- **`render_ondevice` now exposes the backward intermediates** (alpha, ar, v, order, gs, color + w).
+- **On-device `dL/dalpha` composite-backward RUNS on silicon** from proven primitives only (matmul
+  `dLdC@color^T` + strict-upper suffix matmul, SFPU reciprocal, eltwise mul/sub). Matrix reformulation of
+  the suffix-sum recurrence is **exact** (rel 1e-16 vs host serial). Device result = **~12% L2** vs exact
+  (bf16 cancellation in the final `dw·T − suffix·recip` + the reciprocals). `scratchpad/proto_dLda_device.py`.
+- **⚠️ BLOCKER: fp32 eltwise HANGS.** Plumbed `run_unary/run_binary(fp32=True)` (all-Float32 formats) to
+  kill the cancellation, but the perf kernel's mailbox never completes → every dispatch times out. Needs the
+  fp32 tile-size/TILE_SIZE runtime param (or MAX_TILES_DEST) fix, OR a better-conditioned bf16 dL/dalpha
+  reformulation that avoids the catastrophic subtract. **Marked EXPERIMENTAL in sfpu.py — do NOT loop it.**
+- **GOTCHA (learned the hard way): a killed device run WEDGES the card** → `tt-smi -r 0`. Repeated per-op
+  timeouts (88 ops × 6s) ran a hung fp32 attempt to ~560s. **Always pass SHORT per-op `timeout=` (≤3s) to
+  run_unary/run_binary** so a bad kernel can't run away; cap total dispatches.
+
+**Next session (backward, in priority order):** (1) unblock accurate on-device dL/dalpha — either fix the
+fp32-eltwise hang (tile-size param) or reformulate to dodge the subtract/reciprocals; (2) extend the chain
+dL/dE = dL/dalpha·op·ar → dL/dVsq = dL/dE@Ppair^T → dL/dV = dL/dVsq·2V → dL/dpsi = phi^T@dL/dV (all the same
+3 primitives); (3) assemble + cache forward intermediates in L1/GDDR; (4) wire x280 whiten+scatter into one
+live loop; (5) show training convergence on silicon. `dL/dcolor` already proven (1.86e-3).
+
+---
+
+## ⏯ Prior handoff (2026-07-05 am)
 
 **Where we are:** a Gaussian-splatting **trainer** on the heterogeneous machine, bare-metal, no
 ttnn/tt-metal. On silicon:
