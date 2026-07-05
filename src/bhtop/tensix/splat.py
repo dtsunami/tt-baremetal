@@ -402,3 +402,81 @@ def render_ondevice(coord, *, ctx, device_id=0, k=16, size=16, seed=5, order=Non
               f"FULLY on-device (6 MVMUL + 5 SFPU stages, no host arithmetic)")
         print(f"[splat.ondevice] vs golden PSNR = {psnr:.1f} dB  -> {'PASS' if res['ok'] else 'CHECK'}")
     return res
+
+
+def _T(m):
+    return [list(c) for c in zip(*m)]
+
+
+def backward_ondevice(coord, fwd, dLdC, *, ctx, device_id=0, prebuilt=False, verbose=True):
+    """FULLY on-device bf16 BACKWARD of the forward render (`fwd` = a render_ondevice result dict; `dLdC`
+    = dL/dRGB, [P][3]). Every arithmetic op is a Tensix MVMUL (fp32-acc) or FPU eltwise; the host only
+    builds constant matrices, transposes SMALL static operands, and accumulates per-group partials.
+
+    Returns the leaf gradients in DEPTH-SORTED gaussian space:
+      dLdpsi   [3][2K]  (whitened-projection coeffs; feed x280/host whitening backward -> mean/cov)
+      dLdop    [K]      (opacity)
+      dLdcolor [K][3]
+    plus dLdalpha_l2 (a diagnostic — the composite-stage error is cancellation-heavy but near-zero-mean,
+    so it averages out of the reductions; see baremetal_plan.md triage).
+
+    Chain (transpose of the forward): dLdw = dLdC@color^T; dLda = transmittance backward (matmul suffix +
+    reciprocal + eltwise); dLdop = sum_p dLda·ar; dLdE = dLda·op·ar; dLdVsq = dLdE@Ppair^T; dLdV = dLdVsq·V;
+    dLdpsi = (2·phi)^T@dLdV (the x2 from d(square) folded into the constant 2·phi); dLdcolor = w^T@dLdC."""
+    w, alpha, ar, v = fwd["w"], fwd["alpha"], fwd["ar"], fwd["v"]
+    color, order, gs = fwd["color"], fwd["order"], fwd["gs"]
+    size = fwd["size"]; K = fwd["gaussians"]; P = size * size
+    gso = [gs[i] for i in order]
+    _, Ppair, Dop, _, _, _ = _consts(gso, K)
+    op = [Dop[i][i] for i in range(K)]
+    colorT, PpairT = _T(color), _T(Ppair)
+    U = [[1.0 if j > i else 0.0 for i in range(K)] for j in range(K)]      # strict-upper suffix
+    pixels = [(x, y) for y in range(size) for x in range(size)]
+    phi2 = [[2.0 * x, 2.0 * y, 2.0] for (x, y) in pixels]                  # 2·phi (folds d(square)'s x2)
+
+    if not prebuilt:
+        MM.build_for("fp32"); SF.build_unary("reciprocal"); SF.build_binary("mul"); SF.build_binary("sub")
+
+    def mm(A, B, rows, cols):
+        return _take(MM.run_matmul(coord, ctx=ctx, device_id=device_id, a=_pad32(A), b=_pad32(B),
+                                   out_format="fp32", prebuilt=True, verbose=False)["c_dev"], rows, cols)
+    def un(M, o, cols):
+        r, _ = SF.run_unary(coord, _pad32(M), ctx=ctx, device_id=device_id, op=o, prebuilt=True, timeout=3.0)
+        return _take(r, len(M), cols)
+    def bn(A, B, o, cols):
+        r, _ = SF.run_binary(coord, _pad32(A), _pad32(B), ctx=ctx, device_id=device_id, op=o, prebuilt=True, timeout=3.0)
+        return _take(r, len(A), cols)
+
+    groups = [list(range(g, min(g + TILE, P))) for g in range(0, P, TILE)]
+    dLdpsi = [[0.0] * (2 * K) for _ in range(3)]
+    dLdcolor = [[0.0] * 3 for _ in range(K)]
+    dLdop = [0.0] * K
+    for gi in groups:
+        dLdCg = [dLdC[p] for p in gi]; wg = [w[p] for p in gi]; ag = [alpha[p] for p in gi]
+        arg = [ar[p] for p in gi]; opB = [op[:] for _ in gi]; ones = [[1.0] * K for _ in gi]
+        # --- composite / transmittance backward -> dLda ---
+        dw = mm(dLdCg, colorT, len(gi), K)
+        dwW = bn(dw, wg, "mul", K)
+        suf = mm(dwW, U, len(gi), K)
+        Tv = bn(wg, un(ag, "reciprocal", K), "mul", K)                    # T = w/alpha
+        recOM = un(bn(ones, ag, "sub", K), "reciprocal", K)              # 1/(1-alpha)
+        dLda = bn(bn(dw, Tv, "mul", K), bn(suf, recOM, "mul", K), "sub", K)
+        # --- leaf + downstream ---
+        dae = bn(dLda, arg, "mul", K)                                     # dLda·ar
+        red = mm([[1.0] * len(gi)], dae, 1, K)                            # sum_p -> [1][K]
+        for i in range(K): dLdop[i] += red[0][i]
+        dLdE = bn(dae, opB, "mul", K)                                     # ·op
+        dLdVsq = mm(dLdE, PpairT, len(gi), 2 * K)
+        dLdV = bn(dLdVsq, [v[p] for p in gi], "mul", 2 * K)
+        part = mm(_T([phi2[p] for p in gi]), dLdV, 3, 2 * K)             # (2phi)^T @ dLdV
+        for c in range(3):
+            for m in range(2 * K): dLdpsi[c][m] += part[c][m]
+        cpart = mm(_T(wg), dLdCg, K, 3)                                   # w^T @ dLdC
+        for i in range(K):
+            for ch in range(3): dLdcolor[i][ch] += cpart[i][ch]
+
+    res = {"dLdpsi": dLdpsi, "dLdop": dLdop, "dLdcolor": dLdcolor, "order": list(order), "K": K}
+    if verbose:
+        print(f"[splat.backward] {size}x{size}, {K} Gaussians, {len(groups)} groups — FULLY on-device bf16 "
+              f"(matmul + eltwise + reciprocal); leaf grads dLdpsi/dLdop/dLdcolor in sorted space")
+    return res
