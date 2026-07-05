@@ -30,7 +30,10 @@ here on the bare-metal substrate.)
   the Tensix render is the consumer, acks to unblock. Backpressure held on silicon.
 - `cb_loop.py` — the M2 DRAM circular buffer in isolation (produced/acked backpressure).
 - `ondevice_fwd.py` — fully-on-device forward render (6 MVMUL + 5 SFPU, no host arithmetic).
-- `train_color.py` / `train_geometry.py` — training on the het pipeline (color; full geometry, grad-checked).
+- `train_ondevice.py` — **the fully-on-device trainer (loop closed).** Tensix forward → host loss-grad →
+  Tensix dense backward → x280 whiten-backward + un-sort + Adam (resident, doorbell-driven); params + Adam
+  m/v live on the x280. Every model op on device; host only orchestrates + the loss gradient. `train_ondevice.py N`.
+- `train_color.py` / `train_geometry.py` — earlier host-backward training references (color; full geometry, grad-checked).
 
 ## Run
 ```bash
@@ -43,8 +46,13 @@ Gotchas (uncached GDDR window `0x30002000–0x30007000`, 64B-aligned NoC DRAM re
 `csrs mstatus,0x6000`) are documented in the plan.
 
 ## Silicon status (2026-07-05)
-Forward: fully on-device + streaming, ~52.9 dB vs golden, zero host Gaussian-data relay. Training:
-full geometry backward grad-checked, trains pos+shape+opacity+color 17→37 dB; x280 projection/whitening
-and fp32 scatter-add proven. On-device backward de-risked (all primitives verified; first gradient on
-silicon). **Open:** assemble the full on-device backward into one live training loop; cut the ~88
-dispatches/render.
+**Fully-on-device training loop CLOSED.** `train_ondevice.py`: Tensix forward + Tensix dense backward
+(`splat.backward_ondevice`, all bf16 matmul/eltwise/reciprocal) + x280 whiten-backward/un-sort/Adam
+(`kernels/x280/het/opt_step.c`, resident, fp32); params + optimizer state live on the x280, host only
+orchestrates + the loss gradient. Converges **13.4 → 33.9 dB over 100 steps** (~1 s/step), monotonic.
+Image: `poc/renders/splat_trained_ondevice.png`.
+- Forward: fully on-device + streaming, ~52.9 dB vs golden, zero host Gaussian-data relay.
+- The composite backward's bf16 cancellation (~27% on `dL/dalpha`) is near-zero-mean → averages out of
+  the pixel reductions; leaf grads dLdpsi/dLdop/dLdcolor are 0.4–0.7% vs host-exact. (Triage in the plan.)
+- **Open (perf, not correctness):** cut the ~190 dispatches/step (multi-tile matmul `RT_DIM>1`, fused SFPU);
+  move `dLdC` (loss grad) onto the x280 too for a zero-host-arithmetic claim; scale K/resolution.
