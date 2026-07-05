@@ -16,6 +16,21 @@ cross-compiler.
 
 ## ⏯ RESUME — START HERE (handoff, 2026-07-05 pm)
 
+**🏁 THE FULLY-ON-DEVICE TRAINING LOOP IS CLOSED (2026-07-05 pm).** `bhtop.het.train_ondevice`:
+Tensix forward (`render_ondevice`) → host loss-grad `dLdC` → Tensix dense backward
+(`splat.backward_ondevice`, all bf16 matmul/eltwise/reciprocal) → **x280** whiten-backward + un-sort +
+Adam (`kernels/x280/het/opt_step.c`, resident doorbell-driven, params + Adam m/v live on the x280).
+Every model op on device, bare-metal, no ttnn/tt-metal; host only orchestrates + the loss gradient.
+**Silicon: 13.4 → 33.9 dB over 100 steps, ~1 s/step, monotonic.** Image `het/poc/renders/splat_trained_ondevice.png`.
+- `opt_step.c` standalone-verified vs host (5e-5); doorbell residency + 2-step state persistence proven.
+- The x280 is the parameter server (params + m/v resident); host `rdn`s params each step to stage the
+  forward, `wr`s the fresh grads, rings `0x30004000`, polls `0x30004010`. Load ONCE, drive N steps.
+**Open (perf/polish, NOT correctness):** (1) cut ~190 dispatches/step — multi-tile matmul `RT_DIM>1` +
+fused SFPU (the 571 ms→ number); (2) move `dLdC` onto x280 for a zero-host-arithmetic claim; (3) scale
+K / resolution / multi-tile + multi-view (x280 scatter-add already handles cross-tile accumulation).
+
+---
+
 **Session 2026-07-05 pm — promotion + on-device backward started:**
 - **POC promoted out of scratchpad into a TRACKED bhtop package** (was all untracked/at-risk). New homes:
   `src/bhtop/het/` (drivers + `poc/` interview artifact), `src/bhtop/kernels/x280/het/` (x280 C kernels),
