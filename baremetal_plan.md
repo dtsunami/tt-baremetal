@@ -30,19 +30,27 @@ cross-compiler.
   `dLdC@color^T` + strict-upper suffix matmul, SFPU reciprocal, eltwise mul/sub). Matrix reformulation of
   the suffix-sum recurrence is **exact** (rel 1e-16 vs host serial). Device result = **~12% L2** vs exact
   (bf16 cancellation in the final `dw·T − suffix·recip` + the reciprocals). `scratchpad/proto_dLda_device.py`.
-- **⚠️ BLOCKER: fp32 eltwise HANGS.** Plumbed `run_unary/run_binary(fp32=True)` (all-Float32 formats) to
-  kill the cancellation, but the perf kernel's mailbox never completes → every dispatch times out. Needs the
-  fp32 tile-size/TILE_SIZE runtime param (or MAX_TILES_DEST) fix, OR a better-conditioned bf16 dL/dalpha
-  reformulation that avoids the catastrophic subtract. **Marked EXPERIMENTAL in sfpu.py — do NOT loop it.**
+- **✅ TRIAGED (0/5): the bf16 backward is GOOD ENOUGH — precision is NOT the blocker.** Two host+silicon
+  diagnostics settled it: (0) `scratchpad/diag0_recip_stages.py` — every device op is accurate (0.02–0.32%,
+  SFPU reciprocal only 0.15%), but the composed `dL/dalpha` is 26.8% off = **catastrophic cancellation**
+  (`dw·T` and `suffix/(1−α)` are large & nearly equal), and the error is **near-zero-mean** (bias −0.8% of
+  scale — variance, not drift). (5) `scratchpad/diag5_convergence.py` — injecting that exact character
+  (27% L2, −0.8% bias) into the host training loop trains to **36.9 dB = the clean baseline**; even 40% L2 /
+  3% bias → 36.8 dB. **Adam averages the zero-mean error out entirely.** So: proceed on bf16; do NOT chase
+  fp32/x280/reformulation for accuracy.
+- **fp32 eltwise (`run_*(fp32=True)`) is DEPRIORITIZED** (still hangs; marked EXPERIMENTAL). It's only a
+  perf/fusion nicety now, not a correctness need. A fused backward SFPU kernel (11 dispatches → 1) is the
+  real lever, and for perf not precision.
 - **GOTCHA (learned the hard way): a killed device run WEDGES the card** → `tt-smi -r 0`. Repeated per-op
   timeouts (88 ops × 6s) ran a hung fp32 attempt to ~560s. **Always pass SHORT per-op `timeout=` (≤3s) to
   run_unary/run_binary** so a bad kernel can't run away; cap total dispatches.
 
-**Next session (backward, in priority order):** (1) unblock accurate on-device dL/dalpha — either fix the
-fp32-eltwise hang (tile-size param) or reformulate to dodge the subtract/reciprocals; (2) extend the chain
-dL/dE = dL/dalpha·op·ar → dL/dVsq = dL/dE@Ppair^T → dL/dV = dL/dVsq·2V → dL/dpsi = phi^T@dL/dV (all the same
-3 primitives); (3) assemble + cache forward intermediates in L1/GDDR; (4) wire x280 whiten+scatter into one
-live loop; (5) show training convergence on silicon. `dL/dcolor` already proven (1.86e-3).
+**Next session (backward — now pure engineering, no precision unknowns):** (1) extend the chain on bf16
+primitives: dL/dE = dL/dalpha·op·ar → dL/dVsq = dL/dE@Ppair^T → dL/dV = dL/dVsq·2V → dL/dpsi = phi^T@dL/dV
+(same matmul + eltwise-mul the dL/dalpha stage uses); (2) assemble + cache forward intermediates (w,α,ar,v)
+in L1/GDDR; (3) wire x280 whiten+scatter into one live loop; (4) show training convergence on silicon;
+(5) perf: fused SFPU kernel to collapse ~88 dispatches. `dL/dcolor` already proven (1.86e-3), `dL/dalpha`
+runs on silicon (bf16, convergence-adequate).
 
 ---
 
