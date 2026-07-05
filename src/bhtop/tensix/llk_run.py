@@ -29,7 +29,8 @@ RUNTIME_ARGS_START = 0x20000          # __runtime_args_start (NOLOAD .runtime_ar
 MAILBOX_UNPACK     = 0x1FFB8          # +0/+4/+8 = unpack/math/pack thread mailboxes
 KERNEL_COMPLETE    = 0xFF
 RESET_MAILBOX_VAL  = 0xA3
-PERF_COUNTERS_BASE = 0x169000
+PERF_COUNTERS_BASE = 0x169000        # L1 software perf region (tt-llk perf.h; ends 0x16AFF4).
+                                     # NOT the 0xFFB12000 HW debug perf MMIO — distinct source.
 
 _COMPONENTS = ["UNPACK", "MATH", "PACK"]          # canon thread names -> trisc0/1/2
 _THREADS = {"UNPACK": "trisc0", "MATH": "trisc1", "PACK": "trisc2"}
@@ -40,18 +41,35 @@ CANON_DIR = os.path.join(PKG, "kernels", "tensix", "llk")
 BUILD_DIR = os.path.expanduser("~/bhtop/kernels/tensix/llk/_build")
 
 
-def build(name, run_type=None, timeout=180):
+def _variant_dir(name, variant):
+    return os.path.join(BUILD_DIR, f"{name}__{variant}" if variant else name)
+
+
+def build(name, run_type=None, timeout=180, fidelity=None, fp32_acc=None, formats=None, overrides=None,
+          variant=None, cache=False):
     """Compile+link the kernel's ELFs via kernels/tensix/llk/build.sh, generating a build.h for the
-    chosen run type (PERF_RUN_TYPE). Returns {ok, log, elfs, run_type, fields}."""
+    chosen run type (PERF_RUN_TYPE). Returns {ok, log, elfs, run_type, fields}.
+
+    fidelity/fp32_acc/formats are the precision knobs (see llk.gen_build_h): they flow into the
+    generated build.h so a bit-exact matmul RUN can select HiFi4 + fp32 dest-acc + an explicit
+    FormatConfig without hand-editing a header. variant: build into a per-variant ELF dir (so distinct
+    configs — e.g. one SFPU op each — don't clobber each other). cache=True: skip the compile if that
+    variant's ELFs already exist (amortizes builds across a training loop)."""
     from . import llk
-    out = os.path.join(BUILD_DIR, name)
+    out = _variant_dir(name, variant)
     os.makedirs(out, exist_ok=True)
-    text, rt, fields = llk.gen_build_h(name, run_type)         # variant build.h for this run type
+    if cache and all(os.path.isfile(os.path.join(out, c + ".elf")) for c in _COMPONENTS):
+        elfs = {c: os.path.join(out, c + ".elf") for c in _COMPONENTS}
+        return {"ok": True, "log": "(cached)", "elfs": elfs, "dir": out, "run_type": run_type,
+                "fields": None, "artifacts": [], "cached": True}
+    text, rt, fields = llk.gen_build_h(name, run_type, fidelity=fidelity,
+                                       fp32_acc=fp32_acc, formats=formats, overrides=overrides)
     bh = os.path.join(out, "build.h")
     with open(bh, "w") as f:
         f.write(text)
     sh = os.path.join(CANON_DIR, "build.sh")
-    p = subprocess.run(["bash", sh, name, bh], capture_output=True, text=True, timeout=timeout)
+    env = dict(os.environ, OUT=out)
+    p = subprocess.run(["bash", sh, name, bh], capture_output=True, text=True, timeout=timeout, env=env)
     elfs = {c: os.path.join(out, c + ".elf") for c in _COMPONENTS
             if os.path.isfile(os.path.join(out, c + ".elf"))}
     import hashlib
@@ -89,22 +107,34 @@ def _present(name):
 
 
 def _runtime_params(formats, tile_cnt):
-    """RuntimeParams = FormatConfig (12 u32) + TILE_CNT (u32). `formats` is a 12-int list (the
-    DataFormat enum values for each FormatConfig field) or None for all-zero (activity/cycle run)."""
-    f = list(formats or [0] * 12)[:12]
-    f += [0] * (12 - len(f))
-    return f + [int(tile_cnt)]
+    """RuntimeParams runtime image. Formats are now COMPILE-TIME (static constexpr FormatConfig in
+    build.h, the SPEED_OF_LIGHT/compile_time_formats path), so they are NOT a runtime instance member
+    and are no longer written here. gen_build_h ALWAYS emits TILE_CNT as the first runtime field, so
+    offset 0 == TILE_CNT for every kernel; we write tile_cnt there. The region is pre-zeroed so the
+    remaining scalar fields (and any Operand stimuli buffers) default to 0. `formats` is accepted for
+    call-site compatibility but ignored. Kernels that take other runtime dims
+    (CT_DIM/KT_DIM/RT_DIM/LOOP_FACTOR/TILE_SIZE_UNPACK_* — e.g. the matmul family) supply their full
+    param vector via run(runtime_words=[...]) in RuntimeParams struct order; see tensix.matmul which
+    builds that vector for a bit-exact A@B."""
+    return [int(tile_cnt)]
 
 
-def run(name, coord, *, ctx, device_id=0, tile_cnt=16, formats=None, timeout=5.0, poll=0.02):
+def run(name, coord, *, ctx, device_id=0, tile_cnt=16, formats=None, timeout=5.0, poll=0.02,
+        runtime_words=None, variant=None):
     """Load the kernel onto the Tensix core at `coord` and run it (TRISC boot). Returns a dict with
     per-thread completion + the perf-counter region peek. `coord` is anything exalens accepts
-    (OnChipCoordinate or 'x,y'); `ctx` MUST be the DeviceManager's shared context."""
+    (OnChipCoordinate or 'x,y'); `ctx` MUST be the DeviceManager's shared context.
+
+    runtime_words — if given, this exact list of u32 is written verbatim to RUNTIME_ARGS_START
+    (after zeroing the region), overriding the single-tile _runtime_params default. The matmul RUN
+    uses it to supply all 10 dims in RuntimeParams struct order (see tensix.matmul).
+    variant — load the ELFs from the per-variant build dir (see build(variant=...))."""
     from ttexalens.tt_exalens_lib import load_elf, write_words_to_device, read_word_from_device
 
-    comps = _present(name)
+    out = _variant_dir(name, variant)
+    comps = [c for c in _COMPONENTS if os.path.isfile(os.path.join(out, c + ".elf"))]
     if not comps:
-        return {"ok": False, "error": f"{name} not built — run build() first"}
+        return {"ok": False, "error": f"{name} (variant={variant}) not built — run build() first"}
     dev = ctx.devices[device_id]
     block = dev.get_block(coord)
     rdbg = {c: block.get_risc_debug(_THREADS[c]) for c in comps}
@@ -114,7 +144,6 @@ def run(name, coord, *, ctx, device_id=0, tile_cnt=16, formats=None, timeout=5.0
         rdbg[c].set_reset_signal(True)
 
     # 2. load each ELF onto its TRISC (code/data + reset-PC; stays in reset)
-    out = os.path.join(BUILD_DIR, name)
     for c in comps:
         load_elf(elf_file=os.path.join(out, c + ".elf"), location=coord,
                  risc_name=_THREADS[c], device_id=device_id, context=ctx, verify_write=False)
@@ -122,7 +151,8 @@ def run(name, coord, *, ctx, device_id=0, tile_cnt=16, formats=None, timeout=5.0
     # 3. RuntimeParams -> L1 (zero the region first so unwritten fields read 0, not stale garbage),
     #    then 4. reset mailboxes
     write_words_to_device(coord, RUNTIME_ARGS_START, [0] * 64, device_id=device_id, context=ctx)
-    write_words_to_device(coord, RUNTIME_ARGS_START, _runtime_params(formats, tile_cnt),
+    words = runtime_words if runtime_words is not None else _runtime_params(formats, tile_cnt)
+    write_words_to_device(coord, RUNTIME_ARGS_START, words,
                           device_id=device_id, context=ctx)
     write_words_to_device(coord, MAILBOX_UNPACK, [RESET_MAILBOX_VAL] * 3,
                           device_id=device_id, context=ctx)

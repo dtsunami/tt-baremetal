@@ -86,6 +86,9 @@ _DECLS = {
     "UNPACK_TRANSPOSE_WITHIN_FACE":"constexpr bool UNPACK_TRANSPOSE_WITHIN_FACE = false;",
     "SFPU_BINARY_OPERATION": "constexpr ckernel::BinaryOp SFPU_BINARY_OPERATION = ckernel::BinaryOp::ADD;",
     "SFPU_UNARY_OPERATION":  "constexpr SfpuType SFPU_UNARY_OPERATION = SfpuType::gelu;",
+    # dest-register sync mode: default Half (harness DestSync.Half; matmul_perf uses SyncHalf literally).
+    "dest_sync":             "constexpr auto dest_sync = ckernel::DstSync::SyncHalf;",
+    "DST_SYNC_MODE":         "constexpr auto DST_SYNC_MODE = ckernel::DstSync::SyncHalf;",
 }
 # Per-variant integer/bool compile-time constants the harness templates in (defaults = simplest run).
 _DIM_DEFAULTS = {
@@ -103,7 +106,7 @@ _SKIP_SYMS = {"PERF_RUN_TYPE", "REDUCE_ROW", "REDUCE_COL", "REDUCE_SCALAR", "SPE
 _SYM_RE = (r"\b(ELTWISE_BINARY_OP|MATH_FIDELITY|BROADCAST_TYPE|REDUCE_DIM|POOL_TYPE|"
            r"MATH_TRANSPOSE_FACES|ACC_TO_DEST|APPROX_MODE|ITERATIONS|THROTTLE_LEVEL|"
            r"UNPACK_TRANSPOSE_FACES|UNPACK_TRANSPOSE_WITHIN_FACE|"
-           r"SFPU_BINARY_OPERATION|SFPU_UNARY_OPERATION)\b")
+           r"SFPU_BINARY_OPERATION|SFPU_UNARY_OPERATION|dest_sync|DST_SYNC_MODE)\b")
 # Preferred default run type, family-aware — a kernel static_asserts against modes that don't apply
 # to its engine (e.g. an unpack kernel rejects MATH_ISOLATE), so lead with the matching ISOLATE.
 _RUN_TYPE_PREF = {
@@ -131,22 +134,54 @@ _BUILD_H_PREAMBLE = '''// SPDX-License-Identifier: Apache-2.0
 constexpr bool l1_acc_en      = false;
 constexpr bool unpack_to_dest = false;
 
+// Compile-time form (const members + constexpr ctor) so a `constexpr FormatConfig` can be built and
+// its members (e.g. formats.math) used as NON-TYPE TEMPLATE ARGS — which the perf kernels require
+// (call_binary_sfpu_operation<..., formats.math>, init_reduce<..., formats.math, ...>). Mirrors
+// tt-llk format_config.py FORMATS_CONFIG_STRUCT_COMPILETIME.
 struct FormatConfig
 {
-    std::uint32_t unpack_A_src = 0, unpack_B_src = 0, unpack_S_src = 0;
-    std::uint32_t unpack_A_dst = 0, unpack_B_dst = 0, unpack_S_dst = 0;
-    std::uint32_t math = 0, sfpu_math = 0;
-    std::uint32_t pack_src = 0, pack_dst = 0, pack_S_src = 0, pack_S_dst = 0;
-};
+    const std::uint32_t unpack_A_src;
+    const std::uint32_t unpack_B_src;
+    const std::uint32_t unpack_S_src;
+    const std::uint32_t unpack_A_dst;
+    const std::uint32_t unpack_B_dst;
+    const std::uint32_t unpack_S_dst;
+    const std::uint32_t math;
+    const std::uint32_t sfpu_math;
+    const std::uint32_t pack_src;
+    const std::uint32_t pack_dst;
+    const std::uint32_t pack_S_src;
+    const std::uint32_t pack_S_dst;
 
-constexpr bool is_fp32_dest_acc_en = false;
+    constexpr FormatConfig(
+        std::uint32_t unpack_A_src_, std::uint32_t unpack_B_src_, std::uint32_t unpack_S_src_,
+        std::uint32_t unpack_A_dst_, std::uint32_t unpack_B_dst_, std::uint32_t unpack_S_dst_,
+        std::uint32_t math_, std::uint32_t sfpu_math_,
+        std::uint32_t pack_src_, std::uint32_t pack_dst_, std::uint32_t pack_S_src_, std::uint32_t pack_S_dst_) :
+        unpack_A_src(unpack_A_src_), unpack_B_src(unpack_B_src_), unpack_S_src(unpack_S_src_),
+        unpack_A_dst(unpack_A_dst_), unpack_B_dst(unpack_B_dst_), unpack_S_dst(unpack_S_dst_),
+        math(math_), sfpu_math(sfpu_math_),
+        pack_src(pack_src_), pack_dst(pack_dst_), pack_S_src(pack_S_src_), pack_S_dst(pack_S_dst_)
+    {
+    }
+};
 '''
 
 
-def gen_build_h(name, run_type=None):
+def gen_build_h(name, run_type=None, fidelity=None, fp32_acc=None, formats=None, overrides=None):
     """Generate a default build.h for an LLK kernel: scan its source for the compile-time symbols it
     uses (emit a default decl for each) + the runtime params.<field>s it reads (build a RuntimeParams
-    struct), and set PERF_RUN_TYPE to `run_type` (or the kernel's first supported mode)."""
+    struct), and set PERF_RUN_TYPE to `run_type` (or the kernel's first supported mode).
+
+    Precision overrides (for the matmul RUN and any bit-exact variant):
+      fidelity  — ckernel::MathFidelity name string ("LoFi"/"HiFi2"/"HiFi3"/"HiFi4"); overrides the
+                  default LoFi MATH_FIDELITY decl. Integer inputs need HiFi4 for full-mantissa exactness.
+      fp32_acc  — is_fp32_dest_acc_en (bool). Default None -> false (dest accumulates in bf16). True =
+                  fp32 dest accumulation (needed to keep large integer sums exact before the packer).
+      formats   — an explicit 12-tuple of DataFormat integer codes for the static constexpr FormatConfig
+                  (unpack_A/B/S_src, unpack_A/B/S_dst, math, sfpu_math, pack_src/dst, pack_S_src/dst).
+                  Default None -> all Float16_b (code 5). Pass a tuple to change I/O formats (e.g. an
+                  fp32 pack_dst for a wide-integer-exact output)."""
     import re
     src_path = os.path.join(CANON_DIR, name, name + ".cpp")
     with open(src_path, encoding="utf-8", errors="replace") as f:
@@ -160,8 +195,19 @@ def gen_build_h(name, run_type=None):
     def _self_defined(sym):
         return re.search(rf"\b{re.escape(sym)}\b\s*=(?!=)", text) is not None
 
+    overrides = overrides or {}
     syms = sorted(set(re.findall(_SYM_RE, text)) - _SKIP_SYMS)
-    decls = [_DECLS[s] for s in syms if s in _DECLS and not _self_defined(s)]
+    decls = []
+    for s in syms:
+        if _self_defined(s):
+            continue
+        if s in overrides:
+            decls.append(overrides[s])
+        elif s == "MATH_FIDELITY" and fidelity:
+            decls.append(f"constexpr ckernel::MathFidelity MATH_FIDELITY = "
+                         f"ckernel::MathFidelity::{fidelity};")
+        elif s in _DECLS:
+            decls.append(_DECLS[s])
 
     # runtime fields: params.<field> excluding the formats struct + the `#include "params.h"` match
     fields, params_used = [], set()
@@ -182,15 +228,32 @@ def gen_build_h(name, run_type=None):
         if nm not in params_used and re.search(rf"\b{re.escape(nm)}\b", text) and not _self_defined(nm):
             decls.append(f"constexpr bool {nm} = false;")
 
-    lines = [_BUILD_H_PREAMBLE.rstrip(), ""]
+    lines = [_BUILD_H_PREAMBLE.rstrip(), "",
+             f"constexpr bool is_fp32_dest_acc_en = {'true' if fp32_acc else 'false'};", ""]
     lines += decls
     lines.append(f"constexpr auto PERF_RUN_TYPE = PerfRunType::{rt};")
     lines.append("")
+    # `formats` is COMPILE-TIME (static constexpr) so formats.math etc. are usable as non-type
+    # template args (the SPEED_OF_LIGHT/compile_time_formats path). Every field defaults to Float16_b
+    # (Blackhole DataFormat enum value 5 — the harness fallback). Because formats is no longer a
+    # runtime instance member, the loader writes only the scalar runtime fields (see llk_run.py).
+    # Stimuli buffers the kernel binds to `const Operand&` (params.buffer_*) must be Operand-typed,
+    # not std::uint32_t.
+    # TILE_CNT is ALWAYS the first runtime field. `formats` is static (zero instance storage), so the
+    # first scalar field sits at offset 0 — and the loader writes tile_cnt at offset 0 (see
+    # llk_run._runtime_params). Emitting TILE_CNT first unconditionally keeps that write correct even
+    # for kernels that never read params.TILE_CNT (harmless unused member) instead of corrupting
+    # whatever field happened to sort first (e.g. CT_DIM on the matmul kernels).
     lines.append("struct RuntimeParams")
     lines.append("{")
-    lines.append("    FormatConfig formats;")
+    fmt_lit = ",".join(str(int(c)) for c in formats) if formats else "5,5,5,5,5,5, 5,5, 5,5,5,5"
+    lines.append(f"    static constexpr FormatConfig formats = FormatConfig({fmt_lit});")
+    lines.append("    std::uint32_t TILE_CNT;")
     for fld in fields:
-        lines.append(f"    std::uint32_t {fld};")
+        if fld == "TILE_CNT":
+            continue
+        ctype = "Operand" if fld.startswith("buffer_") else "std::uint32_t"
+        lines.append(f"    {ctype} {fld};")
     lines.append("};")
     return "\n".join(lines) + "\n", rt, fields
 
@@ -240,12 +303,17 @@ def _parse_source(path):
         "perf_run_types": run_types,              # isolation modes the kernel supports
         "default_run_type": default_rt,           # deterministic (family-aware) default PERF_RUN_TYPE
         # perf telemetry is uniform: zoned counters (INIT, TILE_LOOP) over the 5 Tensix perf banks,
-        # published to the L1 perf-counters region (see tt-llk counters.h / the plan's 0xFFB12000).
+        # published by the kernel to the L1 software perf region at 0x169000 (tt-llk perf.h
+        # PERF_COUNTERS_BASE_ADDR; runs to the 0x16AFF4 profiler boundary). NOTE: this is NOT the
+        # 0xFFB12000 HW debug perf MMIO (RISCV_DEBUG_REG_PERF_CNT_*) — that's a separate source the
+        # plan conflated with this L1 region. Full bank/zone decode of 0x169000 is not wired yet;
+        # llk_run.py only peeks the base word (see [[tensix-llk]] handoff).
         "telemetry": {
             "kind": "perf_counters",
             "zones": ["INIT", "TILE_LOOP"],
             "banks": ["INSTRN_THREAD", "FPU", "TDMA_UNPACK", "TDMA_PACK", "L1"],
-            "note": "elapsed cycles + event counts per zone; read from the L1 perf-counters region.",
+            "note": "elapsed cycles + event counts per zone; published to the L1 perf region "
+                    "at 0x169000. Decode pending — runner currently peeks the base word only.",
         },
         "upstream": os.path.join(_LLK_REL, os.path.basename(path)),
     }

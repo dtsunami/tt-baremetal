@@ -156,6 +156,13 @@ class Bootloader:
     # the TRISCs fetch instructions from their own local instruction memory, NOT arbitrary L1 — so
     # jumping their PC to an L1 slot address HANGS them (confirmed on device: NCRISC froze on EXEC).
     # The resident loop + params + halt are fine on all 5; only the code-jump is BRISC-only.
+    #
+    # COROLLARY (2026-06): compute-engine kernels (matrix/FPU, SFPU/vector) are categorically NOT
+    # BRISC-overlay material. Even though only BRISC can EXEC an L1 overlay, BRISC drives the T0
+    # (UNPACK) instruction FIFO; MVMUL/SFPMAD belong on T1 (MATH) and stall on cross-thread
+    # SrcA/B-dvalid / DEST-sync that a single BRISC stream can't produce. Such kernels must boot as
+    # real TRISC LLK-lane programs (LLK_BOOT_MODE_TRISC via llk_run.py), not hot-swapped L1 overlays.
+    # See kernels/tensix/overlays/{matrix,sfpu}.c for the full root-cause writeup.
     EXEC_SAFE_RISCS = {0}   # BRISC
 
     def exec(self, slot="A", force=False):
