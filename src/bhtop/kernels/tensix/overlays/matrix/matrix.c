@@ -7,6 +7,20 @@
 // BRISC write blocks → the core wedges and won't return to the bootloader loop. Recover with
 // `tt-smi -r 0`. Try PARAM1 (clear_dvalid) = 3 to reduce src-valid stalls.
 //   PARAM0 = MVMULs to issue   PARAM1 = clear_dvalid (0..3, default 3)
+//
+// *** WHY THIS CANNOT BE FIXED IN PLACE (root cause, 2026-06) ***
+// This is a deliberate negative-control power probe, NOT a path to a working matmul. Two structural
+// reasons, both from the Tensix instruction-FIFO topology:
+//   1. INSTRN_BUF_BASE 0xFFE40000 is the per-thread instruction FIFO, and 0xFFE40000 is the T0
+//      (UNPACK) port — MVMUL belongs on T1 (MATH). INSTRN_BUF_STRIDE is 0x10000 (math = 0xFFE50000).
+//   2. Even retargeted to the math port, MVMUL stalls on SrcA/SrcB dvalid (produced by the unpack
+//      thread) and DEST-bank sync (produced by the pack thread). A single isolated instruction
+//      stream has no producer/consumer → the FPU stalls, the FIFO backs up, the RISC store wedges.
+// Adding device_setup()/addr-mod/WRCFG from BRISC does NOT help: those TTI_* ops bind to the
+// ISSUING thread's CFG state, so from the BRISC overlay (T0 port) they program the wrong thread.
+// The CORRECT path for real FPU/matmul work is the TRISC-boot LLK lane (LLK_BOOT_MODE_TRISC) —
+// see kernels/tensix/llk/{matmul_perf,math_matmul_perf} (MATH_ISOLATE drives the FPU without a live
+// unpacker). Keep this overlay only as a "does the backend wedge?" probe.
 #include "overlay.h"
 
 #define INSTRN_BUF_BASE 0xFFE40000u

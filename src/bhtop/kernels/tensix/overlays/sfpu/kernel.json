@@ -4,7 +4,8 @@
   "engine": "Tensix SFPU (vector)",
   "experimental": true,
   "verified": "untested",
-  "desc": "Seeds vector regs then loops SFPMAD (32-lane FMA) via the instruction buffer to drive the VECTOR unit. Gated — likely needs backend init; expert use only.",
+  "desc": "Negative-control SFPU power probe: loops SFPMAD into the T0/UNPACK instruction FIFO from BRISC. SFPU ops belong on T1/MATH and need SFPENCC/SFPCONFIG bring-up first (device_setup), which a BRISC overlay skips; cannot be fixed in place (see sfpu.c). For real vector work use the TRISC LLK lane: llk/eltwise_unary_sfpu_perf.",
+  "superseded_by": "llk/eltwise_unary_sfpu_perf",
   "params": [
     { "i": 0, "name": "mads", "default": 100000, "desc": "SFPMADs to issue" }
   ],

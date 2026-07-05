@@ -54,7 +54,7 @@
       "TDMA_PACK",
       "L1"
     ],
-    "note": "elapsed cycles + event counts per zone; read from the L1 perf-counters region."
+    "note": "elapsed cycles + event counts per zone; published to the L1 perf region at 0x169000. Decode pending \u2014 runner currently peeks the base word only."
   },
   "upstream": "tt_metal/tt-llk/tests/sources/eltwise_bcast_col_custom_perf.cpp"
 }

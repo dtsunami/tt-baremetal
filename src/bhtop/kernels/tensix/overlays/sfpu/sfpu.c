@@ -6,6 +6,13 @@
 // exercises whether the backend accepts them from the instruction FIFO.)
 // HANG RISK: same as matrix — a stalled SFPU backs up the FIFO and wedges the core; `tt-smi -r 0`.
 //   PARAM0 = SFPMADs to issue
+//
+// *** WHY THIS CANNOT BE FIXED IN PLACE (root cause, 2026-06) — see matrix.c for the full writeup ***
+// SFPU ops belong on the T1 (MATH) thread, but this overlay writes the T0/UNPACK port (0xFFE40000)
+// from BRISC. SFPMAD also needs the SFPU brought up FIRST on the math thread: device_setup() issues
+// TTI_SFPENCC (CC-stack enable) + TTI_SFPCONFIG (LREG11 = -1); a BRISC overlay skips that, so
+// predication/results are undefined even when it doesn't hard-wedge. The CORRECT path is the
+// TRISC-boot LLK lane — see kernels/tensix/llk/eltwise_unary_sfpu_perf. Keep this as a probe only.
 #include "overlay.h"
 
 #define INSTRN_BUF_BASE 0xFFE40000u

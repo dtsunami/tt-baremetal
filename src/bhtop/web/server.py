@@ -24,7 +24,7 @@ from .schemas import (InjectRequest, KernelRunRequest, LabWriteRequest,
                       TensixRtaRequest, TensixGoRequest, TensixLoopRequest,
                       TensixBlParamRequest, TensixBlStageRequest, TensixBlExecRequest,
                       TensixBlHaltRequest, TensixBlCompileRequest, TensixBlSourceRequest,
-                      TensixBlLaunchRequest, LlkBuildRequest, LlkRunRequest)
+                      TensixBlLaunchRequest, LlkBuildRequest, LlkRunRequest, LlkTestAllRequest)
 from ..patterns import PATTERN_INFO
 
 app = FastAPI(title="bhtop-web")
@@ -606,6 +606,20 @@ async def tensix_llk_run(req: LlkRunRequest):
         return await dm.llk_run(req.name, req.x, req.y, req.tile_cnt, req.timeout, req.run_type)
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+@app.post("/api/tensix/llk/test_all")
+async def tensix_llk_test_all(req: LlkTestAllRequest):
+    """Build every LLK kernel once + run each on every core (default all Tensix cores); background
+    job. Poll /api/tensix/llk/test_all/last for live progress + the final pass/fail overview."""
+    if dm.reset_needed:
+        raise HTTPException(409, "NoC hang pending — run `tt-smi -r 0` and restart the server")
+    return await dm.llk_test_all(req.cores, req.run_type, req.tile_cnt, req.timeout)
+
+
+@app.get("/api/tensix/llk/test_all/last")
+async def tensix_llk_test_all_last():
+    return dm.llk_test_last()
 
 
 @app.websocket("/ws/telemetry")

@@ -189,3 +189,10 @@ class LlkRunRequest(BaseModel):
     tile_cnt: int = 16         # RuntimeParams TILE_CNT (tiles to process)
     timeout: float = 5.0       # seconds to poll the mailboxes for KERNEL_COMPLETE
     run_type: str | None = None  # PERF_RUN_TYPE isolation mode; None = kernel default
+
+
+class LlkTestAllRequest(BaseModel):
+    cores: list[dict] | None = None  # [{x,y}] to test; None = all Tensix cores
+    tile_cnt: int = 16               # RuntimeParams TILE_CNT for every run
+    timeout: float = 5.0             # per-run KERNEL_COMPLETE poll timeout (seconds)
+    run_type: str | None = None      # PERF_RUN_TYPE for every kernel; None = each kernel's default

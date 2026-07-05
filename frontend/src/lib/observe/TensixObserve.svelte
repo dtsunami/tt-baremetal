@@ -176,6 +176,31 @@
     } catch (e) { llkErr = String(e.message || e) } finally { llkRunning = false }
   }
 
+  // ---- LLK "test all": build every kernel + run on all (or selected) cores → live overview ----
+  let llkTest = null, llkTestScope = 'all', llkTestTimer = null
+  async function llkTestAll() {
+    llkErr = ''
+    const cores = (llkTestScope === 'selected' && llkSel.length) ? llkSel : null
+    try {
+      const r = await postJSON('/api/tensix/llk/test_all', { cores, tile_cnt: +llkTiles, run_type: llkRunType || null })
+      if (r.ok === false) { llkErr = r.error || 'could not start test'; return }
+      llkTest = { running: true, done: 0, total: r.total, kernels: [], summary: null, secs: 0 }
+      pollLlkTest()
+    } catch (e) { llkErr = String(e.message || e) }
+  }
+  function pollLlkTest() {
+    stopLlkTestPoll()
+    const tick = async () => {
+      try { llkTest = await getJSON('/api/tensix/llk/test_all/last') } catch (e) {}
+      if (llkTest && llkTest.running) llkTestTimer = setTimeout(tick, 1000)
+      else llkTestTimer = null
+    }
+    llkTestTimer = setTimeout(tick, 600)
+  }
+  function stopLlkTestPoll() { if (llkTestTimer) { clearTimeout(llkTestTimer); llkTestTimer = null } }
+  onDestroy(stopLlkTestPoll)
+  const llkPct = (t) => t && t.total ? Math.round(100 * t.done / t.total) : 0
+
   function onTip(e) {
     const el = e.target.closest('[data-tip]')
     if (el) tip = { show: true, x: e.clientX, y: e.clientY, text: el.getAttribute('data-tip') }
@@ -251,6 +276,52 @@
           </div>
         {/if}
       {/each}
+
+      <!-- Test ALL llk kernels across cores: build each once, run on every core, overview when done -->
+      <div class="testall">
+        <div class="tahd">
+          <b>🧪 Test all kernels</b>
+          <label class="sc"><input type="radio" bind:group={llkTestScope} value="all" /> all cores</label>
+          <label class="sc"><input type="radio" bind:group={llkTestScope} value="selected" /> selected ({llkSel.length})</label>
+          <button class="run go" on:click={llkTestAll}
+                  disabled={llkTest?.running || resetNeeded || (llkTestScope === 'selected' && !llkSel.length)}>
+            {llkTest?.running ? 'testing…' : 'Test all ▸'}</button>
+        </div>
+        <div class="dim">Builds every LLK kernel once, then runs each on {llkTestScope === 'selected' ? `${llkSel.length} selected core(s)` : 'all Tensix cores'}. Long-running — progress + per-kernel pass/fail appear below.</div>
+
+        {#if llkTest}
+          <div class="taprog">
+            <div class="bar"><div class="fill" style="width:{llkPct(llkTest)}%"></div></div>
+            <span class="dim">{llkTest.done}/{llkTest.total} runs · {llkTest.secs ?? 0}s {llkTest.running ? '· running…' : '· done'}</span>
+          </div>
+          {#if llkTest.aborted}<div class="msg bad">{llkTest.aborted}</div>{/if}
+          {#if llkTest.summary}
+            <div class="tasum">
+              <span class="pill acc">{llkTest.summary.kernels_clean}/{llkTest.summary.kernels_total} kernels clean</span>
+              <span class="pill">{llkTest.summary.kernels_built} built</span>
+              <span class="pill acc">{llkTest.summary.runs_pass} runs pass</span>
+              <span class="pill bad">{llkTest.summary.runs_fail} runs fail</span>
+            </div>
+          {/if}
+          {#if llkTest.kernels?.length}
+            <table class="tatab">
+              <tr><th>kernel</th><th>build</th><th>cores pass</th><th>errors</th></tr>
+              {#each llkTest.kernels as k}
+                <tr>
+                  <td class="fn">{k.name}</td>
+                  <td>{#if k.build_ok}<span class="acc">built</span>{:else}<span class="bad">build ✗</span>{/if}</td>
+                  <td>{#if k.build_ok}<span class:acc={k.fail === 0 && k.pass > 0} class:bad={k.fail > 0}>{k.pass}/{k.pass + k.fail}</span>{:else}<span class="dim">—</span>{/if}</td>
+                  <td class="taerr">
+                    {#if k.build_err}<details><summary class="bad">build error</summary><pre>{k.build_err}</pre></details>
+                    {:else if k.fail}<details><summary class="bad">{k.fail} core error(s)</summary>{#each k.runs.filter((r) => !r.ok) as r}<div class="dim">{r.core}: {r.error}</div>{/each}</details>
+                    {:else}<span class="dim">—</span>{/if}
+                  </td>
+                </tr>
+              {/each}
+            </table>
+          {/if}
+        {/if}
+      </div>
 
     {:else}
       <!-- metal: pick a core(s); single → RTA/go dashboard; Run (JIT, top-right); collapsible Occupancy -->
@@ -543,6 +614,28 @@
   .tcs { font-size: 11px; margin-top: 2px; }
   .thrcard.done .tcs { color: var(--good); } .thrcard.fail .tcs { color: #e07a77; }
   .tcm { font-size: 10px; margin-top: 2px; }
+
+  /* Test-all overview */
+  .testall { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }
+  .tahd { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .tahd .sc { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
+  .tahd .run { background: var(--panel2); color: var(--accent); border: 1px solid var(--accent); border-radius: 5px; padding: 4px 11px; cursor: pointer; font-family: inherit; font-size: 12px; margin-left: auto; }
+  .tahd .run.go { background: var(--accent); color: #1a1206; font-weight: 600; }
+  .tahd .run:disabled { opacity: .5; cursor: default; }
+  .taprog { display: flex; align-items: center; gap: 10px; margin: 10px 0 6px; }
+  .taprog .bar { flex: 1; height: 8px; background: var(--panel2); border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+  .taprog .fill { height: 100%; background: var(--accent); transition: width .4s; }
+  .tasum { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+  .pill { font-size: 11px; padding: 2px 9px; border-radius: 10px; border: 1px solid var(--line); color: var(--muted); }
+  .pill.acc { color: var(--good); border-color: var(--good); }
+  .pill.bad { color: #e07a77; border-color: #c0504d; }
+  .tatab { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+  .tatab th { text-align: left; font-weight: 600; color: var(--muted); font-size: 10px; text-transform: uppercase; padding: 3px 6px; border-bottom: 1px solid var(--line); }
+  .tatab td { padding: 3px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .tatab .fn { font-family: ui-monospace, monospace; }
+  .tatab .acc { color: var(--good); } .tatab .bad { color: #e07a77; }
+  .taerr summary { cursor: pointer; font-size: 11px; }
+  .taerr pre { background: #1a1a1a; color: #d8d8d8; font-size: 10px; padding: 6px; border-radius: 4px; max-height: 120px; overflow: auto; white-space: pre-wrap; margin: 4px 0; }
 
   /* ISA tab */
   .isabar { display: flex; flex-direction: column; gap: 7px; margin: 8px 0; }

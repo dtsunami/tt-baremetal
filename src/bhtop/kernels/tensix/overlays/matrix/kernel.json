@@ -4,7 +4,8 @@
   "engine": "Tensix FPU (tile)",
   "experimental": true,
   "verified": "wedges",
-  "desc": "Spams MVMUL into the Tensix instruction buffer to drive the matrix engine. WEDGES the core without backend setup — gated; expert use only.",
+  "desc": "Negative-control FPU power probe: spams MVMUL into the T0/UNPACK instruction FIFO from BRISC. WEDGES by design — MVMUL belongs on T1/MATH and stalls on SrcA/B dvalid with no producer/consumer thread; cannot be fixed in place (instruction-FIFO topology — see matrix.c). For real FPU/matmul work use the TRISC LLK lane: llk/matmul_perf + math_matmul_perf.",
+  "superseded_by": "llk/matmul_perf",
   "params": [
     { "i": 0, "name": "mvmuls", "default": 100000, "desc": "MVMULs to issue" },
     { "i": 1, "name": "clear_dvalid", "default": 3, "desc": "0..3; 3 avoids src-valid stalls" }

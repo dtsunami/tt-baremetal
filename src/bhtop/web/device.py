@@ -58,6 +58,7 @@ class DeviceManager:
         self._cum_bytes = 0
         self._kernel_running = None  # gtest name while a kernel job is in flight
         self._last_kernel = None     # last kernel job result (persisted for re-fetch)
+        self._llk_test = None        # LLK "test all kernels on all cores" job state (progress + summary)
         self._build_running = None   # ninja target while a build job is in flight
         self._last_build = None      # last build job result (persisted for re-fetch)
         self._compute_running = None # compute example name while a tlab run is in flight
@@ -1206,6 +1207,87 @@ class DeviceManager:
         r["build_log"] = b["log"]
         r["run_type"] = b.get("run_type")
         return r
+
+    # ---- LLK "test all": build every kernel once, run each on every core, summarize pass/fail ----
+    def _all_tensix_cores(self):
+        return [{"x": t.noc0[0], "y": t.noc0[1]} for t in self.fp.placed if t.kind == "tensix"]
+
+    def _llk_run_built(self, name, x, y, tile_cnt, timeout):
+        """Run an ALREADY-BUILT LLK kernel on one core (no rebuild). Device-thread (via _run)."""
+        from ..tensix import llk_run
+        if self.reset_needed:
+            raise ValueError("NoC hang pending — run tt-smi -r 0 and restart the server")
+        coord = self._tensix_core(x, y).coord
+        return llk_run.run(name, coord, ctx=self.ctx, tile_cnt=int(tile_cnt), timeout=float(timeout))
+
+    async def llk_test_all(self, cores=None, run_type=None, tile_cnt=16, timeout=5.0):
+        """Smoke-test the whole LLK lane: build every kernel once, then run each on every core in
+        `cores` (default = all Tensix cores). Background job; poll llk_test_last() for live progress
+        + the final overview. Each (kernel,core) run records pass/fail + the error/status."""
+        if (self._llk_test or {}).get("running"):
+            return {"ok": False, "error": "an LLK test run is already in progress"}
+        from ..tensix import llk
+        cores = cores or self._all_tensix_cores()
+        kernels = [k["name"] for k in (llk.load().get("kernels") or [])]
+        self._llk_test = {"running": True, "done": 0, "total": len(kernels) * len(cores),
+                          "run_type": run_type, "tile_cnt": int(tile_cnt), "timeout": float(timeout),
+                          "cores": cores, "kernels": [], "summary": None, "aborted": None, "secs": 0.0}
+        asyncio.create_task(self._llk_test_all_job(kernels, cores, run_type, int(tile_cnt), float(timeout)))
+        return {"ok": True, "started": True, "kernels": len(kernels), "cores": len(cores),
+                "total": self._llk_test["total"]}
+
+    async def _llk_test_all_job(self, kernels, cores, run_type, tile_cnt, timeout):
+        from ..tensix import llk_run
+        t0 = time.monotonic()
+        st = self._llk_test
+        try:
+            for name in kernels:
+                krec = {"name": name, "build_ok": False, "build_err": None, "runs": [], "pass": 0, "fail": 0}
+                st["kernels"].append(krec)
+                try:
+                    b = await asyncio.to_thread(llk_run.build, name, run_type)   # build once, off device thread
+                except Exception as e:
+                    b = {"ok": False, "log": str(e)}
+                krec["build_ok"] = bool(b.get("ok"))
+                if not krec["build_ok"]:
+                    krec["build_err"] = (b.get("log") or "build failed").strip()[-400:]
+                    st["done"] += len(cores)               # this kernel's per-core runs are skipped
+                    st["secs"] = round(time.monotonic() - t0, 1)
+                    continue
+                for c in cores:
+                    if self.reset_needed:
+                        st["aborted"] = "NoC hang pending (recover: tt-smi -r 0) — stopped early"
+                        break
+                    try:
+                        r = await self._run(self._llk_run_built, name, c["x"], c["y"], tile_cnt, timeout)
+                        ok = bool(r.get("ok"))
+                        rec = {"core": f'{c["x"]},{c["y"]}', "ok": ok,
+                               "status": r.get("status", "?"), "error": None if ok else r.get("status", "error")}
+                    except Exception as e:
+                        ok = False
+                        rec = {"core": f'{c["x"]},{c["y"]}', "ok": False, "status": "error", "error": str(e)[:200]}
+                    krec["runs"].append(rec)
+                    krec["pass" if ok else "fail"] += 1
+                    st["done"] += 1
+                    st["secs"] = round(time.monotonic() - t0, 1)
+                if st["aborted"]:
+                    break
+        except Exception as e:
+            st["aborted"] = f"test job crashed: {e}"
+        finally:
+            st["running"] = False
+            st["secs"] = round(time.monotonic() - t0, 1)
+            runs_pass = sum(k["pass"] for k in st["kernels"])
+            runs_fail = sum(k["fail"] for k in st["kernels"])
+            st["summary"] = {
+                "kernels_total": len(kernels),
+                "kernels_built": sum(1 for k in st["kernels"] if k["build_ok"]),
+                "kernels_clean": sum(1 for k in st["kernels"] if k["build_ok"] and k["pass"] > 0 and k["fail"] == 0),
+                "runs_total": runs_pass + runs_fail, "runs_pass": runs_pass, "runs_fail": runs_fail,
+            }
+
+    def llk_test_last(self):
+        return self._llk_test or {"running": False, "kernels": [], "done": 0, "total": 0, "summary": None}
 
     # ---- bootloader telemetry stream (focused core, own rate) ----
     async def bl_subscribe(self):

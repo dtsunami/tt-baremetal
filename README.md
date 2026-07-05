@@ -179,7 +179,6 @@ kernel runs.
 ## X280 
 
 ![alt text](pics/sifive_x280.png)
-![alt text](pics/vcix.png)
 
 
 What are these cores actually good for?
@@ -253,3 +252,5 @@ Stage: RESET
 FLASH SUCCESS
 (.venv) starboy@ttstar:~/bhtop$ 
 
+ export PATH="/home/starboy/.local/node/bin:$PATH"
+ cd ~/bhtop/frontend && npm run build
