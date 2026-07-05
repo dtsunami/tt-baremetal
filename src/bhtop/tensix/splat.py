@@ -312,7 +312,7 @@ def _consts(gso, K):
 
 
 def render_ondevice(coord, *, ctx, device_id=0, k=16, size=16, seed=5, order=None, gs=None,
-                    ring=None, prebuilt=False, verbose=True):
+                    ring=None, origin=(0, 0), prebuilt=False, verbose=True):
     """FULLY on-device forward render of a size x size tile. Every arithmetic op runs on the bare-metal
     Tensix MVMUL + SFPU; the host only builds constant matrices and shuttles L1 tiles between stages.
     Stage-major (build each kernel once, loop all 32-pixel groups). Returns RGB + PSNR vs golden.
@@ -333,7 +333,8 @@ def render_ondevice(coord, *, ctx, device_id=0, k=16, size=16, seed=5, order=Non
     psi, Ppair, Dop, Dnop, Mcomb, color = _consts(gso, k)
     K = k
 
-    pixels = [(x, y) for y in range(size) for x in range(size)]
+    ox, oy = origin                                                       # tile origin in SCREEN pixels
+    pixels = [(x + ox, y + oy) for y in range(size) for x in range(size)]  # global screen coords
     groups = [pixels[i:i + TILE] for i in range(0, len(pixels), TILE)]     # <=32 px each
     phis = [[[float(x), float(y), 1.0] for (x, y) in g] for g in groups]
 
