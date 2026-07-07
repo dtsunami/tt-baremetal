@@ -142,7 +142,7 @@ static void bin_insert(int t, int gid, float dep){
  * gacc/loss copy. Runs concurrently on all NH harts of the hub tile. `ring` distinguishes this batch. */
 static void cmd9_slice(int hid, int NH, uint32_t ring){
     volatile int *hdr=(volatile int*)0x30005000u, *ordr=(volatile int*)0x30005200u;
-    volatile int *tidx=(volatile int*)0x30005E00u;                      /* per-slot TILE INDEX (host, post on-device bin) */
+    volatile int *idlg=(volatile int*)0x30005E00u, *orig=(volatile int*)0x30006200u;   /* host-written id-list + origin */
     uint32_t N=(uint32_t)hdr[0];
     volatile float *param=(volatile float*)0x30100000u;
     volatile float *gacc0=param + (uint64_t)N*42;                       /* main gacc (hart 0) */
@@ -153,17 +153,16 @@ static void cmd9_slice(int hid, int NH, uint32_t ring){
     uint32_t imb=((volatile uint32_t*)IMG_BASE_A)[0]; if(imb==0u) imb=TGT_IMG;   /* resident view image base */
     volatile float *img=(volatile float*)(uint64_t)imb;
     int ns=((volatile int*)0x30005DF0u)[0]; if(ns<1)ns=1; if(ns>16)ns=16;
-    int IMGW=((volatile int*)0x30005DF4u)[0]; if(IMGW<=0)IMGW=16; int ntx=IMGW/16; if(ntx<1)ntx=1;
+    int IMGW=((volatile int*)0x30005DF4u)[0]; if(IMGW<=0)IMGW=16;
     for(int s=hid; s<ns; s+=NH){                                        /* produce + signal my slots */
-        int tl=tidx[s]; volatile int* il=(volatile int*)(IDLGB+(uint32_t)tl*0x40u);   /* on-device tile id-list */
-        produce_ops(s, il, coeff, depth, ordr);
-        produce_pix(s, (tl%ntx)*16, (tl/ntx)*16, IMGW, img);
+        produce_ops(s, idlg+s*16, coeff, depth, ordr);
+        produce_pix(s, orig[s*2+0], orig[s*2+1], IMGW, img);
         ((volatile uint32_t*)(FLAG_B+(uint32_t)s*ASTRIDE))[0]=ring;
     }
     for(int s=hid; s<ns; s+=NH){                                        /* wait + consume my slots */
         volatile uint32_t* ack=(volatile uint32_t*)(ACK_B+(uint32_t)s*ASTRIDE);
         uint32_t to=0u; while(ack[0]!=ring){ if(++to>20000000u) break; }
-        int tl=tidx[s]; consume_slot(s, ((volatile int*)(IDLGB+(uint32_t)tl*0x40u))[0], ordr, mygacc, myloss);
+        consume_slot(s, (idlg+s*16)[0], ordr, mygacc, myloss);
     }
 }
 

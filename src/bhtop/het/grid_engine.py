@@ -22,8 +22,9 @@ _SRC = "/home/starboy/bhtop/src/bhtop/kernels/x280/het/het_x280.c"
 X_HDR, X_CAM, X_IDL, X_LOSS = 0x30005000, 0x30005060, 0x300050A0, 0x30005B00
 X_DB, X_DONE, X_CMD = 0x30004000, 0x30004010, 0x30004020
 FLAG, ACK, ASTRIDE = 0x30006400, 0x30006800, 0x40
-NSLOT, IMGW_A, IMGH_A, TIDX = 0x30005DF0, 0x30005DF4, 0x30005DFC, 0x30005E00   # TIDX = per-slot tile index
-OCC = 0x35200000                                     # on-device bin occupancy (per-tile count, contiguous)
+NSLOT, IMGW_A, IDLG, ORIG = 0x30005DF0, 0x30005DF4, 0x30005E00, 0x30006200
+# on-device bin (het cmd11) plumbed but DEFERRED — proj_sqrt precision on A=c/det (O(100+)) makes the device
+# bbox/front-12 selection differ from the host golden (all tiles got the same 12). Host bin below is correct.
 NHARTS_A, WCMD_A, IMG_BASE_A = 0x300027F0, 0x300027F4, 0x300027F8
 HGO, HDONE, LOSS_H, GACC_X = 0x30002800, 0x30002A00, 0x30002C00, 0x30280000
 TGT_BANK = 0x34000000                                 # resident bank: all view images (upload once)
@@ -57,7 +58,7 @@ class HetGridEngine:
             boot_resident("resident_train_perf", c, ctx=ctx, runtime_words=[1, 1, 1, 1, 1, 128, 128, 0, 4, 4], clear_words=56)
         time.sleep(0.3)
         for c in self.workers: self._stage_static(c)
-        self.dev.wr(0, X_HDR, [N, 0]); self.dev.wr(0, IMGW_A, [imgw]); self.dev.wr(0, IMGH_A, [imgh])
+        self.dev.wr(0, X_HDR, [N, 0]); self.dev.wr(0, IMGW_A, [imgw]); self.dev.wr(0, 0x30005DFC, [imgh])
         self.dev.wr(0, NHARTS_A, [NH])
         for h in range(1, 4): self.dev.wr(0, HGO + h * 0x40, [0]); self.dev.wr(0, HDONE + h * 0x40, [0])
         self.dev.wr(0, GACC_X, [0] * (N * 9 * 3)); self.dev.wr(0, LOSS_H, [0] * 64)
@@ -130,16 +131,19 @@ class HetGridEngine:
             self.dev.wr(0, TGT_IMG, [_fb(v) for v in tgt_flat]); self.dev.wr(0, IMG_BASE_A, [TGT_IMG])
         T["gt_up"] = _c() - t
         t = _c(); self._het(2, extra=[self.N, step]); T["proj"] = _c() - t     # project+whiten all params (multi-hart)
-        # ON-DEVICE BIN (cmd11): x280 bins pub->per-tile front-12 id-lists + occupancy; host reads OCC (ntile ints)
-        t = _c(); self._het(11)
-        ntx = self.imgw // TILE; ntile = ntx * (self.imgh // TILE)
-        occc = self.dev.rdn(0, OCC, ntile)
-        occ = [tl for tl in range(ntile) if occc[tl]]; T["pub_bin"] = _c() - t
+        off = self.N * 61                                                     # PUB float offset
+        t = _c(); pub = np.array([[_bf(u) for u in self.dev.rdn(0, PARAM + (off + o * 6) * 4, 6)] for o in range(self.N)])
+        tiles, ntx, nty = BIN.bin_tiles(pub[:, 0], pub[:, 1], pub[:, 2:5], pub[:, 5],
+                                        self.imgw, self.imgh, tile=TILE, cap=64)
+        occ = [tl for tl in range(ntx * nty) if tiles[tl]]; T["pub_bin"] = _c() - t
         t = _c(); twr = 0.0
         for b0 in range(0, len(occ), self.W):
             batch = occ[b0:b0 + self.W]; ns = len(batch)
             tw = _c()
-            self.dev.wr(0, TIDX, list(batch))                             # per-slot TILE INDEX (tiny), cmd9 reads IDLGB[tl]
+            for s, tl in enumerate(batch):
+                ids = list(tiles[tl][:K]); ids += [ids[-1]] * (K - len(ids)) if ids else [0] * K
+                ox, oy = (tl % ntx) * TILE, (tl // ntx) * TILE
+                self.dev.wr(0, IDLG + s * 0x40, [K] + ids); self.dev.wr(0, ORIG + s * 8, [ox, oy])
             self.dev.wr(0, NSLOT, [ns]); twr += _c() - tw
             self._het(9)
         T["batch"] = _c() - t; T["idlg_wr"] = twr
