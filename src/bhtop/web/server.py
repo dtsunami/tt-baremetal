@@ -300,7 +300,7 @@ async def telemetry():
 # ---- UI defaults: persist the chip-view style/calibration to a tracked repo file so a good
 # pathfinding layout can be committed to git and shared (vs. per-browser localStorage) --------
 import json
-UICONF = DIST.parent.parent / "ui-defaults.json"   # ~/bhtop/ui-defaults.json (tracked)
+UICONF = DIST.parent / "ui-defaults.json"   # ~/bhtop/frontend/ui-defaults.json (tracked)
 
 
 @app.get("/api/uiconfig")

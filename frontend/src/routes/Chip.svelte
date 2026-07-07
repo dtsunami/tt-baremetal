@@ -48,7 +48,7 @@
 
   // save the chip-view style/placement to a tracked repo file (git), or pull it back
   async function saveDefaults() {
-    try { await postJSON('/api/uiconfig', { cfg, box, dramPos, dramSize }); saveMsg = 'saved → ui-defaults.json (git) ✓' }
+    try { await postJSON('/api/uiconfig', { cfg, box, dramPos, dramSize }); saveMsg = 'saved → frontend/ui-defaults.json (git) ✓' }
     catch (e) { saveMsg = 'save failed: ' + e }
     setTimeout(() => (saveMsg = ''), 4000)
   }
@@ -456,7 +456,7 @@
         <span>{scale.toFixed(1)}×</span>
         <button class:on={align} on:click={() => (align = !align)}>align</button>
         <button class:on={dramEdit} on:click={() => (dramEdit = !dramEdit)} title="drag GDDR6 badges onto their chips">dram</button>
-        <button on:click={saveDefaults} title="write the current style + placement to ui-defaults.json (git)">save ⤓</button>
+        <button on:click={saveDefaults} title="write the current style + placement to frontend/ui-defaults.json (git)">save ⤓</button>
         <button on:click={loadDefaults} title="pull the committed defaults from the server">load</button>
       </div>
       {#if saveMsg}<div class="savemsg">{saveMsg}</div>{/if}
