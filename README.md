@@ -202,55 +202,19 @@ That one fact — in-fabric access — is what makes them special. Best uses, ro
 
 export TT_METAL_HOME=/home/starboy/tt-metal
 cd $TT_METAL_HOME && ./build_metal.sh --build-programming-examples
-$TT_METAL_HOME/build_Release/programming_examples/contributed/multicast
-TT_METAL_KERNEL_DIR 
 export TT_METAL_RUNTIME_ROOT=/home/starboy/tt-metal
 
+## Firmware Update
 
-# tt flash
+```bash
 pip install git+https://github.com/tenstorrent/tt-flash.git
+wget https://github.com/tenstorrent/tt-system-firmware/releases/download/v19.11.0/fw_pack-19.11.0.fwbundle
+tt-flash flash fw_pack-19.11.0.fwbundle
+```
 
-(.venv) starboy@ttstar:~/bhtop$ wget https://github.com/tenstorrent/tt-system-firmware/releases/download/v19.11.0/fw_pack-19.11.0.fwbundle
-tt-flash --fw-tar fw_pack-19.11.0.fwbundle
---2026-06-21 11:50:00--  https://github.com/tenstorrent/tt-system-firmware/releases/download/v19.11.0/fw_pack-19.11.0.fwbundle
-Resolving github.com (github.com)... 140.82.116.4
-Connecting to github.com (github.com)|140.82.116.4|:443... connected.
-HTTP request sent, awaiting response... 302 Found
-Location: https://release-assets.githubusercontent.com/github-production-release-asset/946310728/bf8e7bd1-8449-4fe5-a129-e59b74b66cd7?sp=r&sv=2018-11-09&sr=b&spr=https&se=2026-06-21T19%3A27%3A25Z&rscd=attachment%3B+filename%3Dfw_pack-19.11.0.fwbundle&rsct=application%2Foctet-stream&skoid=96c2d410-5711-43a1-aedd-ab1947aa7ab0&sktid=398a6654-997b-47e9-b12b-9515b896b4de&skt=2026-06-21T18%3A26%3A46Z&ske=2026-06-21T19%3A27%3A25Z&sks=b&skv=2018-11-09&sig=VoyfGkq1cZfHk79%2FFkAO4nSQnQyxW%2FCd4BRLaUwFuoE%3D&jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmVsZWFzZS1hc3NldHMuZ2l0aHVidXNlcmNvbnRlbnQuY29tIiwia2V5Ijoia2V5MSIsImV4cCI6MTc4MjA2ODEwMCwibmJmIjoxNzgyMDY3ODAwLCJwYXRoIjoicmVsZWFzZWFzc2V0cHJvZHVjdGlvbi5ibG9iLmNvcmUud2luZG93cy5uZXQifQ.dOb0RTcULluDr81hPcchpVzAd8IYoPfV4zEartehNVU&response-content-disposition=attachment%3B%20filename%3Dfw_pack-19.11.0.fwbundle&response-content-type=application%2Foctet-stream [following]
---2026-06-21 11:50:00--  https://release-assets.githubusercontent.com/github-production-release-asset/946310728/bf8e7bd1-8449-4fe5-a129-e59b74b66cd7?sp=r&sv=2018-11-09&sr=b&spr=https&se=2026-06-21T19%3A27%3A25Z&rscd=attachment%3B+filename%3Dfw_pack-19.11.0.fwbundle&rsct=application%2Foctet-stream&skoid=96c2d410-5711-43a1-aedd-ab1947aa7ab0&sktid=398a6654-997b-47e9-b12b-9515b896b4de&skt=2026-06-21T18%3A26%3A46Z&ske=2026-06-21T19%3A27%3A25Z&sks=b&skv=2018-11-09&sig=VoyfGkq1cZfHk79%2FFkAO4nSQnQyxW%2FCd4BRLaUwFuoE%3D&jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmVsZWFzZS1hc3NldHMuZ2l0aHVidXNlcmNvbnRlbnQuY29tIiwia2V5Ijoia2V5MSIsImV4cCI6MTc4MjA2ODEwMCwibmJmIjoxNzgyMDY3ODAwLCJwYXRoIjoicmVsZWFzZWFzc2V0cHJvZHVjdGlvbi5ibG9iLmNvcmUud2luZG93cy5uZXQifQ.dOb0RTcULluDr81hPcchpVzAd8IYoPfV4zEartehNVU&response-content-disposition=attachment%3B%20filename%3Dfw_pack-19.11.0.fwbundle&response-content-type=application%2Foctet-stream
-Resolving release-assets.githubusercontent.com (release-assets.githubusercontent.com)... 185.199.111.133, 185.199.108.133, 185.199.109.133, ...
-Connecting to release-assets.githubusercontent.com (release-assets.githubusercontent.com)|185.199.111.133|:443... connected.
-HTTP request sent, awaiting response... 200 OK
-Length: 5442600 (5.2M) [application/octet-stream]
-Saving to: ‘fw_pack-19.11.0.fwbundle’
+## Frontend Build
 
-fw_pack-19.11.0.fwbundle            100%[==================================================================>]   5.19M  --.-KB/s    in 0.06s   
-
-2026-06-21 11:50:00 (87.7 MB/s) - ‘fw_pack-19.11.0.fwbundle’ saved [5442600/5442600]
-
-Warning: --fw-tar is deprecated, use positional argument instead: tt-flash flash fw_pack-19.11.0.fwbundle
-Stage: SETUP
-Stage: DETECT
-Stage: FLASH
-        Sub Stage: VERIFY
-                Verifying fw-package can be flashed: complete
-                Flashing devices, this might take a minute... ✓
-                Verifying Blackhole[0] can be flashed... SUCCESS
-        Stage: FLASH
-                Sub Stage FLASH Step 1: Blackhole[0]
-                        ROM version is: (19, 6, 0, 0). tt-flash version is: (19, 11, 0, 0)
-                        FW bundle version > ROM version. ROM is being updated.
-                Sub Stage FLASH Step 2: Blackhole[0] {p150a}
-                        Writing new firmware... SUCCESS
-                        Firmware verification... SUCCESS
-Stage: RESET
- Starting reset on devices at PCI indices: 0 
- Waiting for 20 seconds for potential hotplug removal. 
- Waiting for devices to reappear on pci bus... 
- Reset successfully completed for device at PCI index 0. 
- Finishing reset on devices at PCI indices: 0 
-FLASH SUCCESS
-(.venv) starboy@ttstar:~/bhtop$ 
-
- export PATH="/home/starboy/.local/node/bin:$PATH"
- cd ~/bhtop/frontend && npm run build
+```bash
+export PATH="/home/starboy/.local/node/bin:$PATH"
+cd ~/bhtop/frontend && npm run build
+```
