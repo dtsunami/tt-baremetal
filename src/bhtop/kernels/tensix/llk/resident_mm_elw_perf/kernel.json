@@ -1,0 +1,58 @@
+{
+  "kind": "llk_perf",
+  "name": "resident_mm_elw_perf",
+  "title": "Resident Mm Elw",
+  "family": "other",
+  "engine": "tensix",
+  "build": "llk_lib",
+  "source": "resident_mm_elw_perf.cpp",
+  "desc": "RESIDENT matmul + eltwise-binary MODE-SWITCH proof: E=(A@B)*D in one ring (stage1 MVMUL, stage2 FPU ELWMUL consuming stage1 from L1). The new mechanism the fused resident BACKWARD needs. Bit-exact 3/3 on silicon. Build overrides ELTWISE_BINARY_OP=ELWMUL, HiFi4.",
+  "trisc": {
+    "unpack": {
+      "llk_headers": [
+        "llk_unpack_AB.h",
+        "llk_unpack_AB_matmul.h",
+        "llk_unpack_common.h"
+      ]
+    },
+    "math": {
+      "llk_headers": [
+        "llk_math_common.h",
+        "llk_math_eltwise_binary.h",
+        "llk_math_matmul.h"
+      ]
+    },
+    "pack": {
+      "llk_headers": [
+        "llk_lib_pack_wrappers.h",
+        "llk_pack.h",
+        "llk_pack_common.h"
+      ]
+    }
+  },
+  "defines": [
+    "ELTWISE_BINARY_OP",
+    "MATH_FIDELITY",
+    "THROTTLE_LEVEL",
+    "is_fp32_dest_acc_en"
+  ],
+  "perf_run_types": [],
+  "default_run_type": "MATH_ISOLATE",
+  "telemetry": {
+    "kind": "perf_counters",
+    "zones": [
+      "INIT",
+      "TILE_LOOP"
+    ],
+    "banks": [
+      "INSTRN_THREAD",
+      "FPU",
+      "TDMA_UNPACK",
+      "TDMA_PACK",
+      "L1"
+    ],
+    "note": "elapsed cycles + event counts per zone; published to the L1 perf region at 0x169000. Decode pending \u2014 runner currently peeks the base word only."
+  },
+  "upstream": "tt_metal/tt-llk/tests/sources/resident_mm_elw_perf.cpp",
+  "note": "bhtop resident canon; see RESIDENT_GRID.md. unpack/math reconfigure per stage (matmul vs eltwise init)."
+}

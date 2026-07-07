@@ -1,0 +1,60 @@
+{
+  "kind": "llk_perf",
+  "name": "resident_train_perf",
+  "title": "Resident Train",
+  "family": "other",
+  "engine": "tensix",
+  "build": "llk_lib",
+  "source": "resident_train_perf.cpp",
+  "desc": "FULL FUSED RESIDENT training step: forward render + on-device loss grad (dLdC=C-gt) + backward, all in ONE doorbell ring per tile, every intermediate in L1. 27 stages, one compile-time STAGE TABLE dispatched by op (matmul / matmul+SFPU / matmul+recip / eltwise-mul / eltwise-sub). On silicon: RGB 52.6dB + dLdpsi 1.6% + dLdop 1.1% vs golden. dLdcolor delegated to x280 (transpose_dest corrupts the eltwise pipeline). Build overrides ITERATIONS=32.",
+  "trisc": {
+    "unpack": {
+      "llk_headers": [
+        "llk_unpack_A.h",
+        "llk_unpack_AB.h",
+        "llk_unpack_AB_matmul.h",
+        "llk_unpack_common.h"
+      ]
+    },
+    "math": {
+      "llk_headers": [
+        "llk_lib_math_wrappers.h",
+        "llk_math_common.h",
+        "llk_math_eltwise_binary.h",
+        "llk_math_eltwise_unary_sfpu.h",
+        "llk_math_matmul.h"
+      ]
+    },
+    "pack": {
+      "llk_headers": [
+        "llk_lib_pack_wrappers.h",
+        "llk_pack.h",
+        "llk_pack_common.h"
+      ]
+    }
+  },
+  "defines": [
+    "MATH_FIDELITY",
+    "THROTTLE_LEVEL",
+    "is_fp32_dest_acc_en"
+  ],
+  "perf_run_types": [],
+  "default_run_type": "MATH_ISOLATE",
+  "telemetry": {
+    "kind": "perf_counters",
+    "zones": [
+      "INIT",
+      "TILE_LOOP"
+    ],
+    "banks": [
+      "INSTRN_THREAD",
+      "FPU",
+      "TDMA_UNPACK",
+      "TDMA_PACK",
+      "L1"
+    ],
+    "note": "elapsed cycles + event counts per zone; published to the L1 perf region at 0x169000. Decode pending \u2014 runner currently peeks the base word only."
+  },
+  "upstream": "tt_metal/tt-llk/tests/sources/resident_train_perf.cpp",
+  "note": "bhtop resident canon; see RESIDENT_GRID.md. Unifies resident_render_perf + resident_backward_perf + a 3-stage seam. Recip inputs need finite col-padding."
+}

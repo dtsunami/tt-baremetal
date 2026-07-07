@@ -1,0 +1,56 @@
+{
+  "kind": "llk_perf",
+  "name": "resident_render_perf",
+  "title": "Resident Render",
+  "family": "other",
+  "engine": "tensix",
+  "build": "llk_lib",
+  "source": "resident_render_perf.cpp",
+  "desc": "FUSED RESIDENT Gaussian-splat forward render: the whole splat.render_ondevice 11-stage pipeline (6 MVMUL+5 SFPU) collapsed to 6 fused super-stages, run in ONE doorbell ring per pixel-group with every intermediate staged through L1 (no host round-trip). Proven on silicon 51 dB, full tile + worker grid. Build w/ overrides ITERATIONS=32.",
+  "trisc": {
+    "unpack": {
+      "llk_headers": [
+        "llk_unpack_AB_matmul.h",
+        "llk_unpack_common.h"
+      ]
+    },
+    "math": {
+      "llk_headers": [
+        "llk_math_common.h",
+        "llk_math_eltwise_unary_sfpu.h",
+        "llk_math_matmul.h"
+      ]
+    },
+    "pack": {
+      "llk_headers": [
+        "llk_lib_pack_wrappers.h",
+        "llk_pack.h",
+        "llk_pack_common.h"
+      ]
+    }
+  },
+  "defines": [
+    "MATH_FIDELITY",
+    "THROTTLE_LEVEL",
+    "is_fp32_dest_acc_en"
+  ],
+  "perf_run_types": [],
+  "default_run_type": "MATH_ISOLATE",
+  "telemetry": {
+    "kind": "perf_counters",
+    "zones": [
+      "INIT",
+      "TILE_LOOP"
+    ],
+    "banks": [
+      "INSTRN_THREAD",
+      "FPU",
+      "TDMA_UNPACK",
+      "TDMA_PACK",
+      "L1"
+    ],
+    "note": "elapsed cycles + event counts per zone; published to the L1 perf region at 0x169000. Decode pending \u2014 runner currently peeks the base word only."
+  },
+  "upstream": "tt_metal/tt-llk/tests/sources/resident_render_perf.cpp",
+  "note": "bhtop resident canon (not a tt-llk import); see RESIDENT_GRID.md. SFPU ops square/exp/log/log1p compiled in; F5 is a KT=2 accumulating matmul (la@Stri+lpa@I)."
+}

@@ -16,6 +16,44 @@ cross-compiler.
 
 ## ⏯ RESUME — START HERE (handoff, 2026-07-05 pm)
 
+**🟢 RESIDENT RENDER GRID — ALL MECHANISMS PROVEN ON SILICON (2026-07-05, latest).** The perf endgame
+(120 workers each rendering a tile in parallel from a resident kernel — host rings once/tile instead of
+~190 LLK dispatches) is now DE-RISKED end-to-end; the "weeks-long crux" is assembly, not unknowns. See
+`RESIDENT_GRID.md`. Proven:
+- **R1 — 3-thread Tensix doorbell residency**: `kernels/tensix/llk/resident_mm_perf` runs INIT once then
+  all 3 threads spin a `for(;;)` doorbell loop; host rings → re-matmul → publish DONE, NO reload. 3 rings
+  distinct operands, bit-exact (`scratchpad/test_resident_mm.py`). The x280 doorbell trick, now on Tensix.
+- **R3 — full 120-worker resident grid**: `tensix/resident.py::ResidentMatmul` + `test_resident_grid.py`
+  boot all 120 workers (1.1 s, build once), ring in parallel, collect → **240/240 (worker,round)
+  bit-exact**, ~0.75 s/round. The grid-orchestration substrate for the render.
+- **R2 — inter-stage on-device dataflow**: `kernels/tensix/llk/resident_mm2_perf` chains `C2=(A@B)@D` in
+  ONE ring, staging C1 in an L1 scratch and re-unpacking it (pack→unpack synced by an L1 flag). 3 rings
+  bit-exact (`test_resident_mm2.py`). Plus prior `fused_mm_sq_perf` (MVMUL→SFPU in one math thread).
+- 3 silicon lessons baked in (RESIDENT_GRID.md): (1) RuntimeParams ABI is positional+alphabetical — the
+  resident kernels reference `LOOP_FACTOR` so `num_faces_A` doesn't read 0 and hang hw_configure's assert;
+  (2) doorbell reads need `invalidate_data_cache()` (a fence; DCACHE-stale otherwise — the T0 boot-thread
+  hang); (3) publish DONE only after the pack TDMA lands (spin on the last output word off the host
+  poison; `tensix_sync` deadlocks mid-loop).
+- **✅ FUSED RESIDENT FORWARD + BACKWARD both BUILT + VERIFIED ON SILICON** (see `RESIDENT_GRID.md`):
+  - **Forward** `resident_render_perf`: render_ondevice's 11 stages → 6 fused super-stages, **51 dB**, one
+    ring/tile (in-kernel pixel-group loop), 16-worker grid, cycle telemetry. Driver `het/render_resident.py`.
+    (fp32-dest measured WORSE than bf16 — telemetry: 49 dB @ 6.3k cyc vs 51 dB @ 4.1k — so bf16 is default.)
+  - **Backward** `resident_backward_perf`: backward_ondevice's whole 17-stage chain in ONE ring (stage-table:
+    matmul / matmul+recip / eltwise-mul HiFi4 / eltwise-sub LoFi), **leaf grads dLdcolor 0.3% · dLdop 0.9% ·
+    dLdpsi 1.1%** vs exact golden. Prereq mechanism `resident_mm_elw_perf` (matmul↔eltwise mode-switch) also
+    proven. Both worked first try (every mechanism was pre-de-risked).
+  - **✅ MERGE DONE `resident_train_perf`**: the FULL fused training step (fwd render + on-device `dLdC=C−gt`
+    + backward) in ONE ring/tile — **RGB 52.6 dB + dLdpsi 1.6% + dLdop 1.1%** vs golden. 27 stages, one stage
+    table. `dLdcolor=wᵀ@dLdC` delegated to the x280 (transpose_dest corrupts the eltwise pipeline; the x280
+    already holds w+dLdC). Recip inputs need finite col-padding (inf→nan).
+  - **✅ TRAINER PLUMBED + CONVERGES** (`het/train_resident.py`): fused kernel → grads → x280 whiten-bwd+Adam;
+    smoke test **13.6→19.7 dB / loss 0.044→0.011 over 4 steps**. Caveat: `resident_train_perf` stalls on
+    ring>1 (27-stage dest-sync doesn't reset across rings) → trainer re-boots per ring (fresh ring 1); the
+    real multi-ring-resident fix is the last kernel item.
+  - **REMAINING:** fix multi-ring residency; item 2 (x280 stream consts→L1); **1600px = the SCALE CAMPAIGN**
+    (real projection on x280 + multi-tile binning + tile→worker on the 120-grid + densification), not wiring
+    — resident_train_perf is a 16×16/K≤16 Stage-0 primitive. (ttnn `TT_DEVICE_RESIDENT` already does 1600px.)
+
 **🏁 THE FULLY-ON-DEVICE TRAINING LOOP IS CLOSED (2026-07-05 pm).** `bhtop.het.train_ondevice`:
 Tensix forward (`render_ondevice`) → host loss-grad `dLdC` → Tensix dense backward
 (`splat.backward_ondevice`, all bf16 matmul/eltwise/reciprocal) → **x280** whiten-backward + un-sort +

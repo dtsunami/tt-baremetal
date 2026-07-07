@@ -1,0 +1,58 @@
+{
+  "kind": "llk_perf",
+  "name": "resident_backward_perf",
+  "title": "Resident Backward",
+  "family": "other",
+  "engine": "tensix",
+  "build": "llk_lib",
+  "source": "resident_backward_perf.cpp",
+  "desc": "FUSED RESIDENT backward of the splat render: backward_ondevice s whole 17-stage chain in ONE ring, data-driven by a compile-time STAGE TABLE (matmul / matmul+SFPU-reciprocal / FPU eltwise-mul HiFi4 / eltwise-sub LoFi), staged through L1. Leaf grads dLdpsi/dLdop/dLdcolor <1.2% vs exact golden on silicon. Build overrides ITERATIONS=32.",
+  "trisc": {
+    "unpack": {
+      "llk_headers": [
+        "llk_unpack_AB.h",
+        "llk_unpack_AB_matmul.h",
+        "llk_unpack_common.h"
+      ]
+    },
+    "math": {
+      "llk_headers": [
+        "llk_math_common.h",
+        "llk_math_eltwise_binary.h",
+        "llk_math_eltwise_unary_sfpu.h",
+        "llk_math_matmul.h"
+      ]
+    },
+    "pack": {
+      "llk_headers": [
+        "llk_lib_pack_wrappers.h",
+        "llk_pack.h",
+        "llk_pack_common.h"
+      ]
+    }
+  },
+  "defines": [
+    "MATH_FIDELITY",
+    "THROTTLE_LEVEL",
+    "is_fp32_dest_acc_en"
+  ],
+  "perf_run_types": [],
+  "default_run_type": "MATH_ISOLATE",
+  "telemetry": {
+    "kind": "perf_counters",
+    "zones": [
+      "INIT",
+      "TILE_LOOP"
+    ],
+    "banks": [
+      "INSTRN_THREAD",
+      "FPU",
+      "TDMA_UNPACK",
+      "TDMA_PACK",
+      "L1"
+    ],
+    "note": "elapsed cycles + event counts per zone; published to the L1 perf region at 0x169000. Decode pending \u2014 runner currently peeks the base word only."
+  },
+  "upstream": "tt_metal/tt-llk/tests/sources/resident_backward_perf.cpp",
+  "note": "bhtop resident canon; see RESIDENT_GRID.md. alpha/oneMa recip inputs need finite col-padding (else inf->nan propagates through the matmul contractions)."
+}

@@ -7,12 +7,15 @@
  *   DNOP 0x30004000 · COLOR 0x30004800 (each a 512-word tile) */
 #include <tele.h>
 #include <stdint.h>
-#define ZIN   ((volatile uint32_t *)0x30002300u)
-#define PIN   ((volatile uint32_t *)0x30002400u)
-#define PSI   ((volatile uint32_t *)0x30003000u)
-#define DOP   ((volatile uint32_t *)0x30003800u)
-#define DNOP  ((volatile uint32_t *)0x30004000u)
-#define COLOR ((volatile uint32_t *)0x30004800u)
+#define ZIN    ((volatile uint32_t *)0x30002300u)
+#define PIN    ((volatile uint32_t *)0x30002400u)
+#define PSI    ((volatile uint32_t *)0x30003000u)
+#define DOP    ((volatile uint32_t *)0x30003800u)
+#define DNOP   ((volatile uint32_t *)0x30004000u)
+#define COLOR  ((volatile uint32_t *)0x30004800u)
+#define COLORT ((volatile uint32_t *)0x30005000u)   /* color^T  3xK  (dynamic) */
+#define OPB    ((volatile uint32_t *)0x30005800u)   /* op broadcast PxK + 0.5 col-pad (dynamic) */
+#define BF16_HALF 0x3F00u                            /* 0.5 in bf16 (finite col-padding for 1/alpha) */
 
 static inline void place(volatile uint32_t *t, int row, int col, uint32_t bf) {
     int face = ((row >= 16) ? 2 : 0) + ((col >= 16) ? 1 : 0);
@@ -31,7 +34,7 @@ int main(void) {
         while (j >= 0 && z[idx[j]] > kz) { idx[j + 1] = idx[j]; j--; }
         idx[j + 1] = key;
     }
-    for (int w = 0; w < 512; w++) { PSI[w] = 0; DOP[w] = 0; DNOP[w] = 0; COLOR[w] = 0; }
+    for (int w = 0; w < 512; w++) { PSI[w]=0; DOP[w]=0; DNOP[w]=0; COLOR[w]=0; COLORT[w]=0; OPB[w]=0; }
     for (int i = 0; i < K; i++) {
         int g = idx[i];
         uint32_t sa = PIN[g*9+0]&0xFFFFu, m12 = PIN[g*9+1]&0xFFFFu, m22 = PIN[g*9+2]&0xFFFFu,
@@ -41,7 +44,10 @@ int main(void) {
         place(PSI, 1, 2*i+1, m22); place(PSI, 2, 2*i+1, c2);                              /* v2 coeffs */
         place(DOP, i, i, op);  place(DNOP, i, i, op ^ 0x8000u);                           /* diag(±op) */
         place(COLOR, i, 0, rr); place(COLOR, i, 1, gg); place(COLOR, i, 2, bb);           /* rgb row */
+        place(COLORT, 0, i, rr); place(COLORT, 1, i, gg); place(COLORT, 2, i, bb);        /* color^T col */
+        for (int p = 0; p < 32; p++) place(OPB, p, i, op);                                /* op broadcast */
     }
+    for (int k = K; k < 32; k++) for (int p = 0; p < 32; p++) place(OPB, p, k, BF16_HALF); /* col-pad 0.5 */
     TELE[0] = 0x4F505253u;   /* 'OPRS' done */
     for (;;) { }
     return 0;

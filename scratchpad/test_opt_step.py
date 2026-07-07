@@ -10,8 +10,8 @@ SRC = "/home/starboy/bhtop/src/bhtop/kernels/x280/het/opt_step.c"
 fb = lambda x: struct.unpack("<I", struct.pack("<f", float(x)))[0]     # f32 -> u32 bits
 bf = lambda u: struct.unpack("<f", struct.pack("<I", u & 0xFFFFFFFF))[0]
 
-def host_ref(param, gradin, order, m, v, bc1, bc2):
-    lr = [0.15,0.15,2e-3,2e-3,2e-3,0.02,0.1,0.1,0.1]; b1,b2,eps = 0.9,0.999,1e-8
+def host_ref(param, gradin, order, m, v, bc1, bc2, lr):
+    b1,b2,eps = 0.9,0.999,1e-8
     p = [row[:] for row in param]; m = [row[:] for row in m]; v = [row[:] for row in v]
     for i in range(K):  # returns updated (p,m,v) so the host mirror persists across steps
         o = order[i]; d_sa,d_m12,d_tx,d_m22,d_ty = gradin[i][:5]
@@ -56,19 +56,29 @@ def main():
     dev.load(0, 0, words); time.sleep(0.3)
     print("resident:", dev.telemetry(0, slots=1, hart=0)[0] == 0x4F505421)
 
+    # DISTINCTIVE LRs (not the kernel's old hardcoded 0.15/2e-3/...) -> a device==host match proves the
+    # kernel actually reads lr[9] from the header, i.e. hyperparameters are host-plumbed.
+    LR = [0.07,0.03, 5e-3,5e-3,5e-3, 0.011, 0.09,0.09,0.09]
     ok = True
     for step in (1, 2):
         gradin = [[rng.uniform(-0.02,0.02) for _ in range(9)] for _ in range(K)]
         bc1 = 1.0/(1-0.9**step); bc2 = 1.0/(1-0.999**step)
-        param, m, v = host_ref(param, gradin, order, m, v, bc1, bc2)   # host mirror persists
+        param, m, v = host_ref(param, gradin, order, m, v, bc1, bc2, LR)   # host mirror persists
+        hdr = [K, step, fb(bc1), fb(bc2), fb(0.9), fb(0.999), fb(1e-8)] + [fb(x) for x in LR]
         dev.wr(0, 0x30005100, [fb(gradin[i][j]) for i in range(K) for j in range(9)])
-        dev.wr(0, 0x30005000, [K, step, fb(bc1), fb(bc2)])
+        dev.wr(0, 0x30005000, hdr)                                     # K,step,bc1,bc2,b1,b2,eps,lr[9]
         dev.wr(0, 0x30004000, [step])                                  # ring the doorbell
         got_done = False
         for _ in range(40):
             if dev.rd(0, 0x30004010) == step: got_done = True; break
             time.sleep(0.05)
+        if step == 1:
+            hb = dev.rdn(0, 0x30005000, 16)
+            print("   header readback: K=%d step=%d bc1=%.3f b1=%.3f eps=%.1e lr0=%.4f lr5=%.4f lr6=%.4f" % (
+                hb[0], hb[1], bf(hb[2]), bf(hb[4]), bf(hb[6]), bf(hb[7]), bf(hb[12]), bf(hb[13])))
         got = [[bf(u) for u in dev.rdn(0, 0x30005800 + i*9*4, 9)] for i in range(K)]
+        if step == 1:
+            print("   dev param[0][:3]=", [round(x,4) for x in got[0][:3]], " host=", [round(x,4) for x in param[0][:3]])
         maxrel = max(abs(got[i][j]-param[i][j])/(abs(param[i][j])+1e-6) for i in range(K) for j in range(9))
         print(f"  step {step}: done={got_done}  max_rel_err={maxrel:.2e}  {'PASS' if got_done and maxrel<1e-3 else 'FAIL'}")
         ok = ok and got_done and maxrel < 1e-3

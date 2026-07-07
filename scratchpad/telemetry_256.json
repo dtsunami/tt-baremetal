@@ -1,0 +1,65 @@
+[
+  {
+    "step": 1,
+    "img": 256,
+    "n": 1024,
+    "workers": 8,
+    "occ_tiles": 256,
+    "rings": 2048,
+    "psnr": 12.94530432410931,
+    "step_wall_s": 22.47103214263916,
+    "render_dev_cyc": 24313502,
+    "stages": {
+      "x280_project": {
+        "ms": 18.635272979736328,
+        "cyc": 31443190,
+        "cnt": 1024
+      },
+      "host_readback_pub": {
+        "ms": 47.493696212768555,
+        "cyc": 0,
+        "cnt": 0
+      },
+      "host_bin": {
+        "ms": 4.123449325561523,
+        "cyc": 0,
+        "cnt": 256
+      },
+      "render_stage_consts": {
+        "ms": 1983.2565784454346,
+        "cyc": 0,
+        "cnt": 0
+      },
+      "render_stage_pergroup": {
+        "ms": 5090.265989303589,
+        "cyc": 0,
+        "cnt": 0
+      },
+      "render_ring_wait": {
+        "ms": 4387.224912643433,
+        "cyc": 24313502,
+        "cnt": 2048
+      },
+      "render_readback": {
+        "ms": 10276.206493377686,
+        "cyc": 0,
+        "cnt": 0
+      },
+      "scatter_add": {
+        "ms": 251.603364944458,
+        "cyc": 0,
+        "cnt": 0
+      },
+      "host_write_gradin": {
+        "ms": 11.52348518371582,
+        "cyc": 0,
+        "cnt": 0
+      },
+      "x280_adam": {
+        "ms": 96.52566909790039,
+        "cyc": 168374200,
+        "cnt": 1024
+      }
+    }
+  }
+]
