@@ -191,6 +191,10 @@ static void do_device_bin(volatile float* pub, uint32_t N, int ntx, int nty, uin
     }
 }
 
+/* W4 profile counters (hart-0 device-cycles, accumulated across a cmd10 step; reset at cmd10 start).
+ * g_prod = x280 tilizing operands+pixels; g_wait = waiting on the Tensix render+backward (NoC round-trip +
+ * compute); g_cons = x280 detilizing grads + scatter-add. bin timed separately in cmd10. */
+static uint64_t g_prod = 0, g_wait = 0, g_cons = 0;
 /* one hart's slice of a cmd9 batch: produce+signal, then wait+consume, its slots (s%NH==hid), into its OWN
  * gacc/loss copy. Runs concurrently on all NH harts of the hub tile. `ring` distinguishes this batch. */
 static void cmd9_slice(int hid, int NH, uint32_t ring){
@@ -209,15 +213,19 @@ static void cmd9_slice(int hid, int NH, uint32_t ring){
     uint32_t imb=((volatile uint32_t*)IMG_BASE_A)[0]; if(imb==0u) imb=L.tgt_img;   /* resident view image base */
     volatile float *img=(volatile float*)(uint64_t)imb;
     int ns=((volatile int*)0x30005DF0u)[0]; if(ns<1)ns=1; if(ns>16)ns=16;
+    uint64_t _cp=rdcycle();
     for(int s=hid; s<ns; s+=NH){                                        /* produce + signal my slots */
         produce_ops(s, idlg+s*16, coeff, depth, ordr, L.opb_o);
         produce_pix(s, orig[s*2+0], orig[s*2+1], IMGW, img, L.pxbase);
         ((volatile uint32_t*)(FLAG_B+(uint32_t)s*ASTRIDE))[0]=ring;
     }
+    if(hid==0) g_prod += rdcycle()-_cp;                                 /* W4: x280 produce cycles (hart 0) */
     for(int s=hid; s<ns; s+=NH){                                        /* wait + consume my slots */
         volatile uint32_t* ack=(volatile uint32_t*)(ACK_B+(uint32_t)s*ASTRIDE);
-        uint32_t to=0u; while(ack[0]!=ring){ if(++to>20000000u) break; }
-        consume_slot(s, (idlg+s*16)[0], ordr, mygacc, myloss, L.gino);
+        uint64_t _cw=rdcycle(); uint32_t to=0u; while(ack[0]!=ring){ if(++to>20000000u) break; }
+        if(hid==0) g_wait += rdcycle()-_cw;                             /* W4: Tensix render+NoC wait cycles */
+        uint64_t _cc=rdcycle(); consume_slot(s, (idlg+s*16)[0], ordr, mygacc, myloss, L.gino);
+        if(hid==0) g_cons += rdcycle()-_cc;                             /* W4: x280 consume cycles */
     }
 }
 
@@ -432,7 +440,9 @@ int main(void){
             int ntx=IMGW/16, nty=IMGH/16, ntile=ntx*nty;
             int NH=((volatile int*)NHARTS_A)[0]; if(NH<1)NH=1; if(NH>4)NH=4;
             int W=((volatile int*)WORKERS_A)[0]; if(W<1)W=1; if(W>16)W=16;
+            g_prod=0; g_wait=0; g_cons=0; uint64_t _cbin=rdcycle();            /* W4 profile: reset phase counters */
             do_device_bin(pub, N, ntx, nty, LY.idlgb, LY.depb, LY.occ);
+            uint64_t bin_cyc=rdcycle()-_cbin;                                   /* W4: x280 device-bin cycles */
             ((volatile int*)WCMD_A)[0]=9;                                       /* workers run cmd9_slice */
             volatile int* idlg=(volatile int*)0x30005E00u;                      /* per-slot id-list cmd9_slice reads */
             volatile int* orig=(volatile int*)0x30006200u;                      /* per-slot tile origin (ox,oy) */
@@ -464,6 +474,9 @@ int main(void){
                     uint32_t to=0u; while(hd[0]!=dring){ if(++to>40000000u) break; } }
             }
             TELE[4]=(uint32_t)nocc;                                             /* occupied-tile count for the host */
+            TELE[8]=(uint32_t)(bin_cyc>>10);  TELE[9]=(uint32_t)(g_prod>>10);   /* W4 breakdown in KILOcycles (>>10 to */
+            TELE[10]=(uint32_t)(g_wait>>10);  TELE[11]=(uint32_t)(g_cons>>10);  /* fit u32): bin+produce|render-wait+consume */
+            TELE[12]=(uint32_t)((nocc + W - 1) / W);                            /* dispatched batch count (~nocc/W) */
         }
         uint64_t c1=rdcycle();
         TELE[1]=cmd; TELE[2]=(uint32_t)(c1-c0); TELE[3]=(uint32_t)((c1-c0)>>32);

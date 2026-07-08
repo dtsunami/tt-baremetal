@@ -208,7 +208,7 @@ class HetGridEngine:
         self.dev.wr(tile, X_CMD, [cmd]); r = self.dev.rd(tile, X_DB) + 1; self.dev.wr(tile, X_DB, [r])
         t = time.time()
         while self.dev.rd(tile, X_DONE) != r and time.time() - t < timeout: time.sleep(0.0003)
-        return self.dev.telemetry(tile, slots=8, hart=0)
+        return self.dev.telemetry(tile, slots=16, hart=0)   # slots 8-12 carry the cmd10 W4 profile breakdown
         
     def _het_multi(self, cmd, extras, tiles):
         rs = []
@@ -243,7 +243,24 @@ class HetGridEngine:
             # FULLY ON-DEVICE: x280 bins (cmd11 body) + autonomously loops over occupied tiles dispatching batches
             # to the W workers. Host issues ONE doorbell and reads a scalar occ count. No PUB readback, no host bin,
             # no per-batch cmd9 relay.
-            t = _c(); tele = self._het(10, timeout=300.0); occ_count = int(tele[4]); T["orch10"] = _c() - t
+            t = _c(); tele = self._het(10, timeout=300.0); occ_count = int(tele[4]); ow = _c() - t; T["orch10"] = ow
+            # W4 profile: split orch10 into the x280's device-cycle phases (bin / produce / Tensix render-wait /
+            # consume, hart-0 kilocycles). render-wait dominant -> widen the worker grid; produce+consume+bin
+            # dominant -> the x280 hub orchestration is the wall. Apportion the wall by the cycle ratio (-> ms in
+            # step_log); raw kcyc + batch/worker counts in self.last_profile.
+            bin_kc, prod_kc, wait_kc, cons_kc = (int(tele[i]) & 0xFFFFFFFF for i in (8, 9, 10, 11))
+            nbatch = int(tele[12]) & 0xFFFFFFFF
+            tot = bin_kc + prod_kc + wait_kc + cons_kc
+            if tot > 0:
+                T["o_bin"] = ow * bin_kc / tot; T["o_prod"] = ow * prod_kc / tot
+                T["o_rend"] = ow * wait_kc / tot; T["o_cons"] = ow * cons_kc / tot
+            self.last_profile = dict(bin_kc=bin_kc, prod_kc=prod_kc, rend_kc=wait_kc, cons_kc=cons_kc,
+                                     batches=nbatch, workers=self.W, occ=occ_count)
+            if os.environ.get("TT_BM_PROFILE") == "1":
+                print(f"[prof] orch10 {ow*1e3:5.0f}ms = bin {T.get('o_bin',0)*1e3:4.0f} + produce "
+                      f"{T.get('o_prod',0)*1e3:4.0f} + render-wait {T.get('o_rend',0)*1e3:5.0f} + consume "
+                      f"{T.get('o_cons',0)*1e3:4.0f}  |  {nbatch} batches x {self.W} workers, {occ_count} occ tiles",
+                      flush=True)
         else:
             off = self.N * 61                                                 # PUB float offset (host-bin reference path)
             t = _c(); pub = np.array([[_bf(u) for u in self.dev.rdn(0, PARAM + (off + o * 6) * 4, 6)] for o in range(self.N)])
