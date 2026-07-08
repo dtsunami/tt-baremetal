@@ -148,6 +148,36 @@ class HetGridEngine:
         valid = np.isfinite(u) & np.isfinite(v) & np.isfinite(du) & np.isfinite(dv) & (zc > 0.2)
         return dict(u=u, v=v, zc=zc, du=du, dv=dv, valid=valid)
 
+    # ---- W5 densify-resize: N is runtime on the x280 (read from each command header) → resize in place ----
+    def cap(self):
+        """Max N in the current fixed GDDR map: the param chain PARAM..PUB = N*67 words (param14 + m14 + v14 +
+        gacc9 + coeff9 + depth1 + pub6) must stay below TGT_IMG. het_x280.c:24 flags relaying these to lift it."""
+        return (TGT_IMG - PARAM) // (67 * 4)
+
+    def read_moments(self):
+        """Adam m/v [N,14] resident at PARAM+N*14w / PARAM+N*28w (het_x280.c:225). For momentum-preserving edits."""
+        m = np.array([_bf(x) for x in self.dev.rdn(0, PARAM + self.N * 14 * 4, self.N * 14)], np.float64).reshape(self.N, 14)
+        v = np.array([_bf(x) for x in self.dev.rdn(0, PARAM + self.N * 28 * 4, self.N * 14)], np.float64).reshape(self.N, 14)
+        return m, v
+
+    def set_moments(self, m14, v14):
+        m = np.asarray(m14, np.float64).reshape(self.N, 14); v = np.asarray(v14, np.float64).reshape(self.N, 14)
+        self.dev.wr(0, PARAM + self.N * 14 * 4, [_fb(m[o, j]) for o in range(self.N) for j in range(14)])
+        self.dev.wr(0, PARAM + self.N * 28 * 4, [_fb(v[o, j]) for o in range(self.N) for j in range(14)])
+
+    def resize(self, newP14):
+        """Change N in place — NO reboot/recompile (Tensix workers are N-independent; the x280 derives all
+        m/v/gacc offsets from hdr[0]=N each command). Re-lays PARAM and ZEROES m/v/gacc at the new N-derived
+        offsets (momentum reset; caller re-sets sliced momentum via set_moments for keep-mask edits). Single-hub."""
+        p = np.asarray(newP14, np.float64).reshape(-1, 14); newN = p.shape[0]
+        assert 0 < newN <= self.cap(), f"resize N={newN} exceeds bare-metal fixed-map ceiling {self.cap()}"
+        self.N = newN
+        self.set_params(p)
+        M = PARAM + newN * 14 * 4; V = M + newN * 14 * 4; GACC = V + newN * 14 * 4
+        self.dev.wr(0, M, [0] * (newN * 14)); self.dev.wr(0, V, [0] * (newN * 14)); self.dev.wr(0, GACC, [0] * (newN * 9))
+        for h in range(1, self.NH):
+            self.dev.wr(0, GACC_X + (h - 1) * newN * 9 * 4, [0] * (newN * 9))
+
     def _het(self, cmd, extra=None, tile=0, timeout=12.0):
         if extra: self.dev.wr(tile, X_HDR, extra)
         self.dev.wr(tile, X_CMD, [cmd]); r = self.dev.rd(tile, X_DB) + 1; self.dev.wr(tile, X_DB, [r])
