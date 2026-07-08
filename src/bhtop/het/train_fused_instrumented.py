@@ -55,17 +55,18 @@ def pad(rc): return SP._pad32(rc)
 
 
 class Tele:
-    """per-stage accumulator: wall seconds, device cycles, and a count (rings/tiles/gaussians)."""
+    """per-stage accumulator: wall seconds, device cycles, count (rings/tiles/gaussians), host<->device bytes."""
     def __init__(self): self.d = {}
-    def add(self, stage, wall=0.0, cyc=0, cnt=0):
-        s = self.d.setdefault(stage, [0.0, 0, 0]); s[0] += wall; s[1] += cyc; s[2] += cnt
+    def add(self, stage, wall=0.0, cyc=0, cnt=0, byt=0):
+        s = self.d.setdefault(stage, [0.0, 0, 0, 0]); s[0] += wall; s[1] += cyc; s[2] += cnt; s[3] += byt
     def report(self, label):
         tot = sum(v[0] for v in self.d.values())
         print(f"  --- {label}: total {tot*1e3:.0f} ms ---")
-        for st, (w, c, n) in sorted(self.d.items(), key=lambda kv: -kv[1][0]):
+        for st, (w, c, n, b) in sorted(self.d.items(), key=lambda kv: -kv[1][0]):
             cyc = f" | {c:,} dev-cyc" if c else ""
             cnt = f" | {n} x" if n else ""
-            print(f"    {st:22s} {w*1e3:8.1f} ms ({100*w/max(tot,1e-9):4.1f}%){cyc}{cnt}")
+            bw = f" | {b/max(w,1e-9)/1e6:8.1f} MB/s ({b/1e6:.2f} MB)" if b else ""
+            print(f"    {st:22s} {w*1e3:8.1f} ms ({100*w/max(tot,1e-9):4.1f}%){cyc}{cnt}{bw}")
         return tot
 
 
@@ -123,7 +124,12 @@ def stage_static(coord, ctx):
 
 def main():
     pr = lambda *a: print(*a, flush=True)
-    ctx = init_ttexalens(); pr(f"[setup] exalens up | IMG={IMG} ({NTX}x{NTX}={NTX*NTX} tiles) N={N} workers={NW} steps={STEPS}")
+    ctx = init_ttexalens()
+    # Enable bulk DMA transfers on Blackhole: 4B mode chops every read/write into 4-byte register accesses
+    # (each below the DMA threshold), pinning us to the ~2.6 MB/s register path. Disabling it sends each buffer
+    # as one transfer, which crosses the DMA threshold -> ~9.5 GB/s copy-path DMA for the bulk param/render moves.
+    ctx.use_4B_mode = False
+    pr(f"[setup] exalens up | IMG={IMG} ({NTX}x{NTX}={NTX*NTX} tiles) N={N} workers={NW} steps={STEPS} | 4B_mode=off (DMA)")
     all_workers = worker_coords(ctx)
     workers = all_workers[:NW]
     pr(f"[setup] {len(all_workers)} Tensix workers available; using {len(workers)}: {[str(c) for c in workers]}")
@@ -185,7 +191,7 @@ def main():
         t0 = time.time()
         pub = np.array([bf(u) for u in dev.rdn(0, PUB, N * 6)]).reshape(N, 6)
         param = np.array([bf(u) for u in dev.rdn(0, PARAM, N * 14)]).reshape(N, 14)
-        T.add("host_readback_pub", wall=time.time() - t0)
+        T.add("host_readback_pub", wall=time.time() - t0, byt=(N * 6 + N * 14) * 4)
 
         # 3) bin (host, Gap-2 rule)
         t0 = time.time()
@@ -204,7 +210,7 @@ def main():
             gs_tile = [gs[i] for i in ids]
             while len(gs_tile) < KT: gs_tile.append(DUMMY); real.append(-1)
             ox, oy = (tl % ntx) * TILE, (tl // ntx) * TILE
-            t0 = time.time(); stage_consts(coord, ctx, gs_tile); T.add("render_stage_consts", wall=time.time() - t0)
+            t0 = time.time(); stage_consts(coord, ctx, gs_tile); T.add("render_stage_consts", wall=time.time() - t0, byt=9 * 512 * 4)
             for gi, g in enumerate(grp):
                 phi = pad([[float(ox + x), float(oy + y), 1.0] for (x, y) in g])
                 phi2T = pad([[[2.0 * (ox + x), 2.0 * (oy + y), 2.0][r] for (x, y) in g] for r in range(3)])
@@ -213,7 +219,7 @@ def main():
                 wr(coord, H["phi"], enc(phi), context=ctx); wr(coord, H["phi2T"], enc(phi2T), context=ctx)
                 wr(coord, H["gt"], enc(gt_g), context=ctx)
                 ring = rd(coord, DONE, context=ctx) + 1; wr(coord, DB, [ring], context=ctx)
-                T.add("render_stage_pergroup", wall=time.time() - t0)
+                T.add("render_stage_pergroup", wall=time.time() - t0, byt=3 * 512 * 4)
                 t0 = time.time()
                 while time.time() - t0 < 4.0 and rd(coord, DONE, context=ctx) != ring: time.sleep(0.0002)
                 T.add("render_ring_wait", wall=time.time() - t0, cyc=rd(coord, T_END, context=ctx), cnt=1); rings += 1
@@ -225,7 +231,7 @@ def main():
                 dC = nz(MM.untilize32(MM.unpack_bf16_words(rds(coord, S_dLdC, word_count=512, context=ctx))))
                 dp = nz(MM.untilize32(MM.unpack_bf16_words(rds(coord, O_dLdpsi, word_count=512, context=ctx))))
                 do = nz(MM.untilize32(MM.unpack_bf16_words(rds(coord, O_dLdop, word_count=512, context=ctx))))
-                T.add("render_readback", wall=time.time() - t0)
+                T.add("render_readback", wall=time.time() - t0, byt=5 * 512 * 4)
                 t0 = time.time()
                 for pi in range(len(g)):
                     rgb_full[oy + g[pi][1], ox + g[pi][0]] = [C[pi * 32 + ch] for ch in range(3)]
@@ -244,7 +250,7 @@ def main():
         # 5) x280 Adam over all N
         t0 = time.time()
         dev.wr(0, GRADIN, [fb(gacc[i][j]) for i in range(N) for j in range(9)])
-        T.add("host_write_gradin", wall=time.time() - t0)
+        T.add("host_write_gradin", wall=time.time() - t0, byt=N * 9 * 4)
         bc1 = 1.0 / (1 - 0.9 ** step); bc2 = 1.0 / (1 - 0.999 ** step)
         LR = [0.03, 0.03, 0.03, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.05, 0.05, 0.05]
         dev.wr(0, X_HDR, [N, step, fb(bc1), fb(bc2), fb(0.9), fb(0.999), fb(1e-8)] + [fb(x) for x in LR])

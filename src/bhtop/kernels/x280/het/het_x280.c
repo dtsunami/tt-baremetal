@@ -39,6 +39,7 @@
  * race), cmd1 merges. HGO/HDONE/LOSS_H each on own 64B line (concurrent-write granule rule). */
 #define NHARTS_A 0x300027F0u  /* host-set hart count (1..4) */
 #define WCMD_A   0x300027F4u  /* which slice the workers run this dispatch: 2=project 1=adam 9=orchestrate */
+#define WORKERS_A 0x300027FCu /* number of Tensix workers (slots/batch) — host writes once; cmd10 reads for on-device dispatch */
 #define IMG_BASE_A 0x300027F8u /* current view's resident target-image base (0 => fall back to TGT_IMG) */
 #define IMGH_A   0x30005DFCu   /* image height (px) for on-device binning */
 #define IDLGB    0x35000000u   /* on-device bin: per-TILE id-list [count,id0..id11], stride 0x40 */
@@ -123,6 +124,8 @@ static void consume_slot(int slot, int K, volatile int* ordr, volatile float* ga
 }
 
 static inline int flr(float x){ int i=(int)x; return (x<(float)i)?i-1:i; }   /* floor (host uses math.floor) */
+static inline double proj_sqrtd(double x){ double r; __asm__("fsqrt.d %0,%1":"=f"(r):"f"(x)); return r; }
+static inline int dflr(double x){ int i=(int)x; return (x<(double)i)?i-1:i; }  /* floor on double (match host float64) */
 /* insert Gaussian gid (depth dep) into tile t's front-12-by-depth id-list (IDLGB[t]=[count,id..]) — the
  * on-device equivalent of the host bin_tiles' depth-sort + cap. Keeps the 12 nearest (smallest depth). */
 static void bin_insert(int t, int gid, float dep){
@@ -135,6 +138,30 @@ static void bin_insert(int t, int gid, float dep){
     } else if(dep < D[11]){
         int p=11; while(p>0 && D[p-1]>dep){ D[p]=D[p-1]; L[1+p]=L[p]; p--; }
         D[p]=dep; L[1+p]=gid;
+    }
+}
+
+/* on-device tile binning: pub[N*6]=(gx,gy,a,b,c,dep) -> per-tile front-12 id-lists (IDLGB) + occupancy (OCC).
+ * DOUBLE-precision geometry to match the host float64 golden: float32 det=a*c-b*b suffers catastrophic
+ * cancellation on near-degenerate covariances -> A=c/det blows up -> whole-image bbox -> every tile got the
+ * same 12 nearest. x280 has hardware FP64 (fsqrt.d, fdiv.d), so this is exact and cheap. */
+static void do_device_bin(volatile float* pub, uint32_t N, int ntx, int nty){
+    int ntile=ntx*nty;
+    for(int t=0;t<ntile;t++){ ((volatile int*)(IDLGB+(uint32_t)t*0x40u))[0]=0; ((volatile int*)OCC)[t]=0; }
+    for(uint32_t i=0;i<N;i++){
+        volatile float* pu=pub+(uint64_t)i*6;
+        double gx=pu[0],gy=pu[1],a=pu[2],b=pu[3],c=pu[4]; float dep=pu[5];
+        double det=a*c-b*b; if(det<=0.0) continue;
+        double A=c/det, Cc=a/det;
+        double ex=3.0*proj_sqrtd(A>0.0?A:0.0), ey=3.0*proj_sqrtd(Cc>0.0?Cc:0.0);
+        int tx0=dflr((gx-ex)*0.0625); if(tx0<0)tx0=0; int tx1=dflr((gx+ex)*0.0625); if(tx1>ntx-1)tx1=ntx-1;
+        int ty0=dflr((gy-ey)*0.0625); if(ty0<0)ty0=0; int ty1=dflr((gy+ey)*0.0625); if(ty1>nty-1)ty1=nty-1;
+        if(tx1<tx0||ty1<ty0) continue;
+        for(int ty=ty0;ty<=ty1;ty++) for(int tx=tx0;tx<=tx1;tx++) bin_insert(ty*ntx+tx,(int)i,dep);
+    }
+    for(int t=0;t<ntile;t++){                          /* OCC = real count; pad id-list to K=12 (match host [:12]) */
+        volatile int* L=(volatile int*)(IDLGB+(uint32_t)t*0x40u); int cnt=L[0]; ((volatile int*)OCC)[t]=cnt;
+        if(cnt>0){ int last=L[cnt]; for(int p=cnt;p<12;p++) L[1+p]=last; L[0]=12; }
     }
 }
 
@@ -199,7 +226,10 @@ static void adam_slice(int hid, int NH){
     float Rv[9],tv[3],fx,fy,cx,cy; for(int i=0;i<9;i++)Rv[i]=cam[i]; for(int i=0;i<3;i++)tv[i]=cam[9+i];
     fx=cam[12];fy=cam[13];cx=cam[14];cy=cam[15];
     float bc1=hdrf[2],bc2=hdrf[3],b1=hdrf[4],b2=hdrf[5],eps=hdrf[6]; const volatile float *lr=&hdrf[7];
-    for(uint32_t g=(uint32_t)hid; g<N; g+=(uint32_t)NH){
+    uint32_t start_g = (uint32_t)hdr[24];
+    uint32_t end_g = (uint32_t)hdr[25];
+    if(end_g == 0) end_g = N;  /* fallback for un-partitioned 1-tile legacy mode */
+    for(uint32_t g=start_g+(uint32_t)hid; g<end_g; g+=(uint32_t)NH){
         volatile float *p=param+(uint64_t)g*14;
         float ga[9]; { volatile float* g0=gacc0+(uint64_t)g*9; for(int j=0;j<9;j++) ga[j]=g0[j];
             for(int h=1;h<NH;h++){ volatile float* gh=(volatile float*)GACC_X+(uint64_t)(h-1)*N*9+(uint64_t)g*9;
@@ -348,26 +378,50 @@ int main(void){
                 uint32_t to=0u; while(hd[0]!=ring){ if(++to>40000000u) break; } if(hd[0]==ring) ndone++; }
               TELE[5]=ring; TELE[6]=ndone; TELE[7]=(uint32_t)NH; }
         }
-        else if(cmd==11u){                   /* ON-DEVICE BIN: pub -> per-tile front-12 id-lists (IDLGB) + occupancy (OCC) */
+        else if(cmd==11u){                   /* ON-DEVICE BIN only (host still reads OCC + dispatches) — validation aid */
+            int IMGW=((volatile int*)0x30005DF4u)[0]; if(IMGW<=0)IMGW=16;
+            int IMGH=((volatile int*)IMGH_A)[0]; if(IMGH<=0)IMGH=16;
+            do_device_bin(pub, N, IMGW/16, IMGH/16);
+        }
+        else if(cmd==10u){                   /* MASTER: on-device bin, then autonomously dispatch every occupied tile to
+                                              * the W workers in batches — the host is OUT of the orchestration loop. */
             int IMGW=((volatile int*)0x30005DF4u)[0]; if(IMGW<=0)IMGW=16;
             int IMGH=((volatile int*)IMGH_A)[0]; if(IMGH<=0)IMGH=16;
             int ntx=IMGW/16, nty=IMGH/16, ntile=ntx*nty;
-            for(int t=0;t<ntile;t++){ ((volatile int*)(IDLGB+(uint32_t)t*0x40u))[0]=0; ((volatile int*)OCC)[t]=0; }
-            for(uint32_t i=0;i<N;i++){
-                volatile float* pu=pub+(uint64_t)i*6;
-                float gx=pu[0],gy=pu[1],a=pu[2],b=pu[3],c=pu[4],dep=pu[5];
-                float det=a*c-b*b; if(det<=0.0f) continue;
-                float A=c/det, Cc=a/det;                                            /* Sigma2 diag (screen var x,y) */
-                float ex=3.0f*proj_sqrt(A>0.0f?A:0.0f), ey=3.0f*proj_sqrt(Cc>0.0f?Cc:0.0f);
-                int tx0=flr((gx-ex)*0.0625f); if(tx0<0)tx0=0; int tx1=flr((gx+ex)*0.0625f); if(tx1>ntx-1)tx1=ntx-1;
-                int ty0=flr((gy-ey)*0.0625f); if(ty0<0)ty0=0; int ty1=flr((gy+ey)*0.0625f); if(ty1>nty-1)ty1=nty-1;
-                if(tx1<tx0||ty1<ty0) continue;
-                for(int ty=ty0;ty<=ty1;ty++) for(int tx=tx0;tx<=tx1;tx++) bin_insert(ty*ntx+tx, (int)i, dep);
+            int NH=((volatile int*)NHARTS_A)[0]; if(NH<1)NH=1; if(NH>4)NH=4;
+            int W=((volatile int*)WORKERS_A)[0]; if(W<1)W=1; if(W>16)W=16;
+            do_device_bin(pub, N, ntx, nty);
+            ((volatile int*)WCMD_A)[0]=9;                                       /* workers run cmd9_slice */
+            volatile int* idlg=(volatile int*)0x30005E00u;                      /* per-slot id-list cmd9_slice reads */
+            volatile int* orig=(volatile int*)0x30006200u;                      /* per-slot tile origin (ox,oy) */
+            volatile int* occ =(volatile int*)OCC;
+            static uint32_t dring=0x40000000u;                                  /* batch ring, high base -> never collides with doorbell rings */
+            int s=0, nocc=0;
+            for(int t=0;t<ntile;t++){
+                if(occ[t]<=0) continue;
+                nocc++;
+                volatile int* L=(volatile int*)(IDLGB+(uint32_t)t*0x40u); int cnt=L[0]; if(cnt>16)cnt=16;
+                idlg[s*16+0]=cnt; for(int i=0;i<cnt;i++) idlg[s*16+1+i]=L[1+i];   /* fill slot s from tile t */
+                orig[s*2+0]=(t%ntx)*16; orig[s*2+1]=(t/ntx)*16;
+                if(++s==W){                                                     /* batch full -> dispatch across NH harts */
+                    ((volatile int*)0x30005DF0u)[0]=s; dring++;                  /* NSLOT + fresh batch ring */
+                    __asm__ volatile("fence" ::: "memory");                     /* slot writes globally visible before wake */
+                    for(int h=1;h<NH;h++) ((volatile uint32_t*)(HGO+(uint32_t)h*0x40u))[0]=dring;
+                    cmd9_slice(0, NH, dring);                                    /* hart 0's slots */
+                    for(int h=1;h<NH;h++){ volatile uint32_t* hd=(volatile uint32_t*)(HDONE+(uint32_t)h*0x40u);
+                        uint32_t to=0u; while(hd[0]!=dring){ if(++to>40000000u) break; } }   /* barrier */
+                    s=0;
+                }
             }
-            for(int t=0;t<ntile;t++){                          /* OCC = real count; pad id-list to K=12 (match host) */
-                volatile int* L=(volatile int*)(IDLGB+(uint32_t)t*0x40u); int cnt=L[0]; ((volatile int*)OCC)[t]=cnt;
-                if(cnt>0){ int last=L[cnt]; for(int p=cnt;p<12;p++) L[1+p]=last; L[0]=12; }
+            if(s>0){                                                            /* final partial batch */
+                ((volatile int*)0x30005DF0u)[0]=s; dring++;
+                __asm__ volatile("fence" ::: "memory");
+                for(int h=1;h<NH;h++) ((volatile uint32_t*)(HGO+(uint32_t)h*0x40u))[0]=dring;
+                cmd9_slice(0, NH, dring);
+                for(int h=1;h<NH;h++){ volatile uint32_t* hd=(volatile uint32_t*)(HDONE+(uint32_t)h*0x40u);
+                    uint32_t to=0u; while(hd[0]!=dring){ if(++to>40000000u) break; } }
             }
+            TELE[4]=(uint32_t)nocc;                                             /* occupied-tile count for the host */
         }
         uint64_t c1=rdcycle();
         TELE[1]=cmd; TELE[2]=(uint32_t)(c1-c0); TELE[3]=(uint32_t)((c1-c0)>>32);

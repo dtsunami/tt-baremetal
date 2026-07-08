@@ -6,7 +6,7 @@ project(cmd2) -> host bins tiles -> orchestrate batches(cmd9, all workers concur
 rectangular IMGW x IMGH, and a real pinhole camera per step.
 
 Contract: boot in __init__, set_params([N,14]) / read_params()->[N,14], step(cam16, tgt_flat)->loss."""
-import struct, time, math
+import struct, time, math, os
 import numpy as np
 from ttexalens import init_ttexalens
 from ttexalens.tt_exalens_lib import read_word_from_device as rd, read_words_from_device as rds, write_words_to_device as wr
@@ -15,7 +15,7 @@ from bhtop.tensix.loader import worker_coords
 from bhtop.tensix import splat as SP, matmul as MM, llk_run
 from bhtop.tensix.resident import boot_resident
 from bhtop.tensix.baremetal import BareMetal, bm_coord
-import gap2_bin_golden as BIN
+from bhtop.goldens import gap2_bin_golden as BIN
 
 _SRC = "/home/starboy/bhtop/src/bhtop/kernels/x280/het/het_x280.c"
 # x280 GDDR map (matches het_x280.c / conductor)
@@ -42,6 +42,7 @@ class HetGridEngine:
     def __init__(self, N, imgw, imgh, W=6, NH=4):
         assert imgw % TILE == 0 and imgh % TILE == 0, "IMGW/IMGH must be multiples of 16"
         self.N, self.imgw, self.imgh, self.NH = N, imgw, imgh, NH
+        self.on_device_orch = os.environ.get("TT_ONDEV_ORCH", "1") == "1"   # cmd10: bin+dispatch on x280 (host out of loop)
         self.ntx, self.nty = imgw // TILE, imgh // TILE
         self.grp = [[(x, y) for y in range(TILE) for x in range(TILE)][i:i + 32] for i in range(0, TILE * TILE, 32)]
         ctx = init_ttexalens(); self.ctx = ctx
@@ -49,28 +50,33 @@ class HetGridEngine:
         self.workers = allw[:W]; self.wxy = [tuple(c.to("noc0")) for c in self.workers]
         self.W = len(self.workers)
         self.dev = L2cpu(ctx=ctx)
-        try: self.dev.bringup(0)
-        except Exception: pass
-        # render kernel + resident conductor on each worker; het multi-hart hub
+        # ---- Tensix render workers + resident conductors (must boot BEFORE x280 tiles) ----
         llk_run.build("resident_train_perf", run_type="L1_TO_L1", fidelity="HiFi4", fp32_acc=False,
                       formats=None, overrides={"ITERATIONS": "constexpr int ITERATIONS = 32;"})
         for c in self.workers:
             boot_resident("resident_train_perf", c, ctx=ctx, runtime_words=[1, 1, 1, 1, 1, 128, 128, 0, 4, 4], clear_words=56)
         time.sleep(0.3)
         for c in self.workers: self._stage_static(c)
-        self.dev.wr(0, X_HDR, [N, 0]); self.dev.wr(0, IMGW_A, [imgw]); self.dev.wr(0, 0x30005DFC, [imgh])
-        self.dev.wr(0, NHARTS_A, [NH])
-        for h in range(1, 4): self.dev.wr(0, HGO + h * 0x40, [0]); self.dev.wr(0, HDONE + h * 0x40, [0])
-        self.dev.wr(0, GACC_X, [0] * (N * 9 * 3)); self.dev.wr(0, LOSS_H, [0] * 64)
-        for s in range(self.W): self.dev.wr(0, FLAG + s * ASTRIDE, [0]); self.dev.wr(0, ACK + s * ASTRIDE, [0])
-        self.dev.wr(0, X_DB, [0]); self.dev.wr(0, X_DONE, [0])
+        # ---- x280 tiles (het multi-hart hub on each tile) ----
+        self.tiles = list(self.dev.loc.keys()) if hasattr(self.dev, "loc") else [0]
         words = tc.compile_source(_SRC, base=CODE_ADDR, march="rv64gc")
-        self.dev.load(0, 0, words)
-        for _ in range(80):
-            if self.dev.telemetry(0, slots=1, hart=0)[0] == 0x48455421: break
-            time.sleep(0.03)
-        else: raise RuntimeError("het leader not resident (tt-smi -r 0)")
-        for h in range(1, NH): self.dev.redirect(0, h, CODE_ADDR)
+        for t in self.tiles:
+            try: self.dev.bringup(t)
+            except Exception: pass
+            self.dev.wr(t, X_HDR, [N, 0] + [0]*25); self.dev.wr(t, IMGW_A, [imgw]); self.dev.wr(t, 0x30005DFC, [imgh])
+            self.dev.wr(t, NHARTS_A, [NH]); self.dev.wr(t, 0x300027FC, [self.W])   # WORKERS_A for on-device cmd10 dispatch
+            for h in range(1, 4): self.dev.wr(t, HGO + h * 0x40, [0]); self.dev.wr(t, HDONE + h * 0x40, [0])
+            self.dev.wr(t, LOSS_H, [0] * 64)
+            self.dev.wr(t, X_DB, [0]); self.dev.wr(t, X_DONE, [0])
+            if t == self.tiles[0]:
+                self.dev.wr(t, GACC_X, [0] * (N * 9 * 3))
+                for s in range(self.W): self.dev.wr(t, FLAG + s * ASTRIDE, [0]); self.dev.wr(t, ACK + s * ASTRIDE, [0])
+            self.dev.load(t, 0, words)
+            for _ in range(80):
+                if self.dev.telemetry(t, slots=1, hart=0)[0] == 0x48455421: break
+                time.sleep(0.03)
+            else: raise RuntimeError(f"het leader not resident on tile {t}")
+            for h in range(1, NH): self.dev.redirect(t, h, CODE_ADDR)
         time.sleep(0.2)
         cbin = BareMetal.build("conductor")
         for s, c in enumerate(self.workers):
@@ -113,12 +119,29 @@ class HetGridEngine:
         w = self.dev.rdn(0, PARAM, self.N * 14)
         return np.array([[_bf(w[o * 14 + j]) for j in range(14)] for o in range(self.N)], np.float64)
 
-    def _het(self, cmd, extra=None):
-        if extra: self.dev.wr(0, X_HDR, extra)
-        self.dev.wr(0, X_CMD, [cmd]); r = self.dev.rd(0, X_DB) + 1; self.dev.wr(0, X_DB, [r])
+    def _het(self, cmd, extra=None, tile=0, timeout=12.0):
+        if extra: self.dev.wr(tile, X_HDR, extra)
+        self.dev.wr(tile, X_CMD, [cmd]); r = self.dev.rd(tile, X_DB) + 1; self.dev.wr(tile, X_DB, [r])
         t = time.time()
-        while self.dev.rd(0, X_DONE) != r and time.time() - t < 12.0: time.sleep(0.0003)
-        return self.dev.telemetry(0, slots=8, hart=0)
+        while self.dev.rd(tile, X_DONE) != r and time.time() - t < timeout: time.sleep(0.0003)
+        return self.dev.telemetry(tile, slots=8, hart=0)
+        
+    def _het_multi(self, cmd, extras, tiles):
+        rs = []
+        for i, t in enumerate(tiles):
+            if extras[i]: self.dev.wr(t, X_HDR, extras[i])
+            self.dev.wr(t, X_CMD, [cmd])
+            r = self.dev.rd(t, X_DB) + 1
+            self.dev.wr(t, X_DB, [r])
+            rs.append(r)
+        t0 = time.time()
+        done = [False] * len(tiles)
+        while not all(done) and time.time() - t0 < 12.0:
+            for i, t in enumerate(tiles):
+                if not done[i] and self.dev.rd(t, X_DONE) == rs[i]:
+                    done[i] = True
+            time.sleep(0.0003)
+        return [self.dev.telemetry(t, slots=8, hart=0) for t in tiles]
 
     def step(self, cam16, tgt_flat, lr14, step, view_idx=None):
         """cam16 = [Rv(9), tv(3), fx, fy, cx, cy]; tgt_flat = imgh*imgw*3 f32 (y,x,ch); lr14 = per-param LR.
@@ -131,24 +154,46 @@ class HetGridEngine:
             self.dev.wr(0, TGT_IMG, [_fb(v) for v in tgt_flat]); self.dev.wr(0, IMG_BASE_A, [TGT_IMG])
         T["gt_up"] = _c() - t
         t = _c(); self._het(2, extra=[self.N, step]); T["proj"] = _c() - t     # project+whiten all params (multi-hart)
-        off = self.N * 61                                                     # PUB float offset
-        t = _c(); pub = np.array([[_bf(u) for u in self.dev.rdn(0, PARAM + (off + o * 6) * 4, 6)] for o in range(self.N)])
-        tiles, ntx, nty = BIN.bin_tiles(pub[:, 0], pub[:, 1], pub[:, 2:5], pub[:, 5],
-                                        self.imgw, self.imgh, tile=TILE, cap=64)
-        occ = [tl for tl in range(ntx * nty) if tiles[tl]]; T["pub_bin"] = _c() - t
-        t = _c(); twr = 0.0
-        for b0 in range(0, len(occ), self.W):
-            batch = occ[b0:b0 + self.W]; ns = len(batch)
-            tw = _c()
-            for s, tl in enumerate(batch):
-                ids = list(tiles[tl][:K]); ids += [ids[-1]] * (K - len(ids)) if ids else [0] * K
-                ox, oy = (tl % ntx) * TILE, (tl // ntx) * TILE
-                self.dev.wr(0, IDLG + s * 0x40, [K] + ids); self.dev.wr(0, ORIG + s * 8, [ox, oy])
-            self.dev.wr(0, NSLOT, [ns]); twr += _c() - tw
-            self._het(9)
-        T["batch"] = _c() - t; T["idlg_wr"] = twr
+        if self.on_device_orch:
+            # FULLY ON-DEVICE: x280 bins (cmd11 body) + autonomously loops over occupied tiles dispatching batches
+            # to the W workers. Host issues ONE doorbell and reads a scalar occ count. No PUB readback, no host bin,
+            # no per-batch cmd9 relay.
+            t = _c(); tele = self._het(10, timeout=300.0); occ_count = int(tele[4]); T["orch10"] = _c() - t
+        else:
+            off = self.N * 61                                                 # PUB float offset (host-bin reference path)
+            t = _c(); pub = np.array([[_bf(u) for u in self.dev.rdn(0, PARAM + (off + o * 6) * 4, 6)] for o in range(self.N)])
+            tiles, ntx, nty = BIN.bin_tiles(pub[:, 0], pub[:, 1], pub[:, 2:5], pub[:, 5],
+                                            self.imgw, self.imgh, tile=TILE, cap=64)
+            occ = [tl for tl in range(ntx * nty) if tiles[tl]]; T["pub_bin"] = _c() - t
+            t = _c(); twr = 0.0
+            for b0 in range(0, len(occ), self.W):
+                batch = occ[b0:b0 + self.W]; ns = len(batch)
+                tw = _c()
+                for s, tl in enumerate(batch):
+                    ids = list(tiles[tl][:K]); ids += [ids[-1]] * (K - len(ids)) if ids else [0] * K
+                    ox, oy = (tl % ntx) * TILE, (tl // ntx) * TILE
+                    self.dev.wr(0, IDLG + s * 0x40, [K] + ids); self.dev.wr(0, ORIG + s * 8, [ox, oy])
+                self.dev.wr(0, NSLOT, [ns]); twr += _c() - tw
+                self._het(9)
+            T["batch"] = _c() - t; T["idlg_wr"] = twr; occ_count = len(occ)
         t = _c(); bc1 = 1.0 / (1 - 0.9 ** step); bc2 = 1.0 / (1 - 0.999 ** step)
-        self._het(1, extra=[self.N, step, _fb(bc1), _fb(bc2), _fb(0.9), _fb(0.999), _fb(1e-8)] + [_fb(x) for x in lr14])
-        loss = _bf(self.dev.rdn(0, X_LOSS, 1)[0]); T["adam"] = _c() - t
+        
+        base_ext = [self.N, step, _fb(bc1), _fb(bc2), _fb(0.9), _fb(0.999), _fb(1e-8)] + [_fb(x) for x in lr14]
+        base_ext += [0, 0, 0]  # pad to hdr[24]
+        
+        chunk = math.ceil(self.N / len(self.tiles))
+        extras = []
+        for i in range(len(self.tiles)):
+            start_g = i * chunk
+            end_g = min((i + 1) * chunk, self.N)
+            extras.append(base_ext + [start_g, end_g])
+            
+        self._het_multi(1, extras, self.tiles)
+        
+        # Loss is computed across all tiles, but wait, loss is stored in LOSS_H per tile.
+        # Let's just read the loss from Tile 0 for now (or sum them). Tile 0 computes its chunk's loss.
+        # Actually, each tile computes loss for its slice. We should sum them.
+        loss = sum(_bf(self.dev.rdn(t, X_LOSS, 1)[0]) for t in self.tiles)
+        T["adam"] = _c() - t
         self.last_timing = T
-        return loss, len(occ)
+        return loss, occ_count
