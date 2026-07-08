@@ -33,6 +33,9 @@ HGO, HDONE, LOSS_H = 0x30002800, 0x30002A00, 0x30002C00
 PARAM = 0x30100000
 OPB_O, PXBASE, GINO = 0x60000000, 0x61000000, 0x62000000    # per-slot operand / pixel / grad-inbox banks
 TGT_BANK = 0x66000000                                        # resident bank: all view images (upload once)
+DESC = 0x68000000                                            # W4 worker-produce: per-slot compact coeff descriptor
+DESC_STRIDE = 0x800                                          # must match het_x280.c DESC_STRIDE
+WPROD_A = 0x300027E0                                         # x280 worker-produce flag (must match het_x280.c)
 OPS_O = PXS_O = GIS_O = 0x10000
 CFG, HUB = 0x3200, (8, 3)
 TILE, K, P = 16, 12, 32
@@ -47,6 +50,7 @@ class HetGridEngine:
         assert imgw % TILE == 0 and imgh % TILE == 0, "IMGW/IMGH must be multiples of 16"
         self.N, self.imgw, self.imgh, self.NH = N, imgw, imgh, NH
         self.on_device_orch = os.environ.get("TT_ONDEV_ORCH", "1") == "1"   # cmd10: bin+dispatch on x280 (host out of loop)
+        self.wprod = os.environ.get("TT_BM_WPRODUCE", "0") == "1"           # W4: conductor tilizes locally (produce off the hub)
         self.ntx, self.nty = imgw // TILE, imgh // TILE
         self.grp = [[(x, y) for y in range(TILE) for x in range(TILE)][i:i + 32] for i in range(0, TILE * TILE, 32)]
         ctx = init_ttexalens(); self.ctx = ctx
@@ -75,6 +79,7 @@ class HetGridEngine:
             except Exception: pass
             self.dev.wr(t, X_HDR, [N, 0] + [0]*25); self.dev.wr(t, IMGW_A, [imgw]); self.dev.wr(t, 0x30005DFC, [imgh])
             self.dev.wr(t, NHARTS_A, [NH]); self.dev.wr(t, 0x300027FC, [self.W])   # WORKERS_A for on-device cmd10 dispatch
+            self.dev.wr(t, WPROD_A, [1 if self.wprod else 0])                       # W4 worker-produce flag
             for h in range(1, 4): self.dev.wr(t, HGO + h * 0x40, [0]); self.dev.wr(t, HDONE + h * 0x40, [0])
             self.dev.wr(t, LOSS_H, [0] * 64)
             self.dev.wr(t, X_DB, [0]); self.dev.wr(t, X_DONE, [0])
@@ -89,9 +94,11 @@ class HetGridEngine:
             for h in range(1, NH): self.dev.redirect(t, h, CODE_ADDR)
         time.sleep(0.2)
         cbin = BareMetal.build("conductor")
+        _LO = self._layout()   # cfg[7]=this slot's descriptor, cfg[8]=target-image base, cfg[10]=wprod, cfg[11]=imgw
         for s, c in enumerate(self.workers):
             wr(c, CFG, [bm_coord(*HUB), s, OPB_O + s * OPS_O, GINO + s * GIS_O, FLAG + s * ASTRIDE,
-                        ACK + s * ASTRIDE, PXBASE + s * PXS_O, 0, 0, 8], context=ctx)
+                        ACK + s * ASTRIDE, PXBASE + s * PXS_O, DESC + s * DESC_STRIDE, _LO["tgt_img"], 8,
+                        1 if self.wprod else 0, self.imgw], context=ctx)
             BareMetal(*self.wxy[s], ctx=ctx, risc="brisc").run(cbin)
         time.sleep(0.2)
         M = PARAM + N * 14 * 4; V = M + N * 14 * 4; GACC = V + N * 14 * 4
@@ -128,7 +135,8 @@ class HetGridEngine:
                 f"dynamic GDDR layout overflow: N={N}, {self.imgw}x{self.imgh} -> dynamic top 0x{top:x} exceeds "
                 f"the worker-bank base 0x{OPB_O:x}. Lower TT_MAX_POINTS or TT_SIZE (ceiling ~2M Gaussians @ 1600px).")
         return dict(param=PARAM, m=m, v=v, gacc=gacc, coeff=coeff, depth=depth, pub=pub,
-                    gacc_x=gacc_x, tgt_img=tgt_img, top=top, opb_o=OPB_O, pxbase=PXBASE, gino=GINO, tgt_bank=TGT_BANK)
+                    gacc_x=gacc_x, tgt_img=tgt_img, top=top, opb_o=OPB_O, pxbase=PXBASE, gino=GINO,
+                    tgt_bank=TGT_BANK, desc=DESC)
 
     def set_params(self, params14):
         p = np.asarray(params14, np.float64).reshape(self.N, 14)

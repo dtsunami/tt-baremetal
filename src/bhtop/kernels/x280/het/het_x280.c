@@ -29,7 +29,7 @@
 #define PXS_O   0x00010000u   /* per-slot pixel-bank stride */
 #define GIS_O   0x00010000u   /* per-slot grad-inbox stride */
 #define GDDR_TOP 0xF0000000u  /* stay well under the 4 GiB local GDDR window; lay() asserts top < this */
-typedef struct { uint32_t param,m,v,gacc,coeff,depth,pub,gacc_x,tgt_img,opb_o,pxbase,gino,idlgb,depb,occ,tgt_bank,top; } layout_t;
+typedef struct { uint32_t param,m,v,gacc,coeff,depth,pub,gacc_x,tgt_img,opb_o,pxbase,gino,idlgb,depb,occ,tgt_bank,desc,top; } layout_t;
 static inline uint32_t algn(uint32_t x){ return (x + 0xFFFu) & ~0xFFFu; }   /* 4 KiB align (multiple of 0x800 tile granule) */
 static inline void lay(uint32_t N, int IMGW, int IMGH, int W, int NH, layout_t* L){
     if(NH<1)NH=1; if(IMGW<16)IMGW=16; if(IMGH<16)IMGH=16; (void)W;
@@ -56,7 +56,9 @@ static inline void lay(uint32_t N, int IMGW, int IMGH, int W, int NH, layout_t* 
     L->depb    = 0x64000000u;
     L->occ     = 0x65000000u;
     L->tgt_bank= 0x66000000u;
+    L->desc    = 0x68000000u;   /* W4 worker-produce: per-slot compact coeff descriptor [K,ox,oy,coeff[12*9]], stride DESC_STRIDE */
 }
+#define DESC_STRIDE 0x800u     /* per-slot descriptor: 3 hdr + 12*9 coeff words = 111 words < 0x800 */
 /* Per-slot FLAG/ACK on their OWN 64B line — concurrent 4B NoC writes to adjacent words in one granule race
  * and get clobbered (silicon-observed: 2 of 6 workers' acks lost at 4B stride). 0x40 stride = one line/slot. */
 #define FLAG_B  0x30006400u
@@ -65,6 +67,7 @@ static inline void lay(uint32_t N, int IMGW, int IMGH, int W, int NH, layout_t* 
 /* MULTI-HART (4 harts on the hub tile share its local GDDR): hart 0 = leader (command loop), harts 1..NH-1 =
  * workers. cmd9 partitions slots s%NH==hid across harts, each consuming into its OWN gacc/loss (no scatter-add
  * race), cmd1 merges. HGO/HDONE/LOSS_H each on own 64B line (concurrent-write granule rule). */
+#define WPROD_A  0x300027E0u  /* W4 worker-produce flag: 1 => conductor tilizes locally, x280 skips produce */
 #define NHARTS_A 0x300027F0u  /* host-set hart count (1..4) */
 #define WCMD_A   0x300027F4u  /* which slice the workers run this dispatch: 2=project 1=adam 9=orchestrate */
 #define WORKERS_A 0x300027FCu /* number of Tensix workers (slots/batch) — host writes once; cmd10 reads for on-device dispatch */
@@ -213,10 +216,11 @@ static void cmd9_slice(int hid, int NH, uint32_t ring){
     uint32_t imb=((volatile uint32_t*)IMG_BASE_A)[0]; if(imb==0u) imb=L.tgt_img;   /* resident view image base */
     volatile float *img=(volatile float*)(uint64_t)imb;
     int ns=((volatile int*)0x30005DF0u)[0]; if(ns<1)ns=1; if(ns>16)ns=16;
+    int wprod=((volatile int*)WPROD_A)[0];                              /* W4: 1 => conductor tilizes, x280 skips produce */
     uint64_t _cp=rdcycle();
     for(int s=hid; s<ns; s+=NH){                                        /* produce + signal my slots */
-        produce_ops(s, idlg+s*16, coeff, depth, ordr, L.opb_o);
-        produce_pix(s, orig[s*2+0], orig[s*2+1], IMGW, img, L.pxbase);
+        if(!wprod){ produce_ops(s, idlg+s*16, coeff, depth, ordr, L.opb_o);
+                    produce_pix(s, orig[s*2+0], orig[s*2+1], IMGW, img, L.pxbase); }
         ((volatile uint32_t*)(FLAG_B+(uint32_t)s*ASTRIDE))[0]=ring;
     }
     if(hid==0) g_prod += rdcycle()-_cp;                                 /* W4: x280 produce cycles (hart 0) */
@@ -455,6 +459,13 @@ int main(void){
                 volatile int* L=(volatile int*)(uint64_t)(LY.idlgb+(uint32_t)t*0x40u); int cnt=L[0]; if(cnt>16)cnt=16;
                 idlg[s*16+0]=cnt; for(int i=0;i<cnt;i++) idlg[s*16+1+i]=L[1+i];   /* fill slot s from tile t */
                 orig[s*2+0]=(t%ntx)*16; orig[s*2+1]=(t/ntx)*16;
+                if(((volatile int*)WPROD_A)[0]){                                 /* W4 worker-produce: gather compact coeff descriptor */
+                    volatile uint32_t* dsc=(volatile uint32_t*)(uint64_t)(LY.desc+(uint32_t)s*DESC_STRIDE);
+                    volatile uint32_t* cf =(volatile uint32_t*)(uint64_t)LY.coeff;
+                    dsc[0]=(uint32_t)cnt; dsc[1]=(uint32_t)((t%ntx)*16); dsc[2]=(uint32_t)((t/ntx)*16);
+                    for(int i=0;i<cnt;i++){ uint32_t gid=(uint32_t)idlg[s*16+1+i];
+                        for(int j=0;j<9;j++) dsc[3+i*9+j]=cf[(uint64_t)gid*9+j]; }   /* coeffs in depth-sorted id order */
+                }
                 if(++s==W){                                                     /* batch full -> dispatch across NH harts */
                     ((volatile int*)0x30005DF0u)[0]=s; dring++;                  /* NSLOT + fresh batch ring */
                     __asm__ volatile("fence" ::: "memory");                     /* slot writes globally visible before wake */
