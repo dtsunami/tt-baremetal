@@ -463,7 +463,8 @@ int main(void){
                     volatile uint32_t* dsc=(volatile uint32_t*)(uint64_t)(LY.desc+(uint32_t)s*DESC_STRIDE);
                     volatile uint32_t* cf =(volatile uint32_t*)(uint64_t)LY.coeff;
                     dsc[0]=(uint32_t)cnt; dsc[1]=(uint32_t)((t%ntx)*16); dsc[2]=(uint32_t)((t/ntx)*16);
-                    for(int i=0;i<cnt;i++){ uint32_t gid=(uint32_t)idlg[s*16+1+i];
+                    volatile int* ors=(volatile int*)0x30005200u + s*16;         /* sorted->global for x280 consume */
+                    for(int i=0;i<cnt;i++){ uint32_t gid=(uint32_t)idlg[s*16+1+i]; ors[i]=(int)gid;
                         for(int j=0;j<9;j++) dsc[3+i*9+j]=cf[(uint64_t)gid*9+j]; }   /* coeffs in depth-sorted id order */
                 }
                 if(++s==W){                                                     /* batch full -> dispatch across NH harts */
