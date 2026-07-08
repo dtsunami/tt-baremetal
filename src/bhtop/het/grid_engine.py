@@ -46,6 +46,12 @@ class HetGridEngine:
         self.ntx, self.nty = imgw // TILE, imgh // TILE
         self.grp = [[(x, y) for y in range(TILE) for x in range(TILE)][i:i + 32] for i in range(0, TILE * TILE, 32)]
         ctx = init_ttexalens(); self.ctx = ctx
+        # W1: DMA readback. 4B mode chops every transfer into 4-byte register accesses (~2.6 MB/s), pinning
+        # read_params() (per-step preview + PLY) to the slow path. Disabling it sends each bulk buffer as one
+        # DMA transfer (~9.5 GB/s D2H) — the fork tt_umd (0.9.8, BlackholeDmaTransfer::d2h_transfer, verified
+        # bit-exact on p150a) must be installed in the env. Gated so a missing DMA .so falls back safely.
+        if os.environ.get("TT_DMA_READBACK", "1") == "1":
+            ctx.use_4B_mode = False
         allw = [c for c in worker_coords(ctx) if tuple(c.to("noc0"))[0] > 8]   # RIGHT NUMA block
         self.workers = allw[:W]; self.wxy = [tuple(c.to("noc0")) for c in self.workers]
         self.W = len(self.workers)
