@@ -125,6 +125,29 @@ class HetGridEngine:
         w = self.dev.rdn(0, PARAM, self.N * 14)
         return np.array([[_bf(w[o * 14 + j]) for j in range(14)] for o in range(self.N)], np.float64)
 
+    def read_screen(self):
+        """W5 pose-opt: per-Gaussian screen state + mean-projection grads, reconstructed on host from GDDR (NO
+        kernel change). Returns dict(u,v,zc,du,dv,valid) — the same contract as device_resident.last_screen —
+        where du=dL/du, dv=dL/dv are exactly the whitening-backward the x280 Adam computes (het_x280.c:239-242).
+        Sources already resident after engine.step(): PUB[N*6]=[u,v,a,b,c,zc] at PARAM+N*61w, per-hart grad
+        accumulators gacc0 at PARAM+N*42w (hart 0) + GACC_X partitions (harts 1..NH-1). MUST be called AFTER
+        step() and BEFORE the next step's cmd2 (which zeroes gacc). Single-hub (tile 0) assumption."""
+        N = self.N
+        pub = np.array([_bf(x) for x in self.dev.rdn(0, PARAM + N * 61 * 4, N * 6)], np.float64).reshape(N, 6)
+        u, v, a, b, c, zc = (pub[:, j] for j in range(6))
+        ga = np.array([_bf(x) for x in self.dev.rdn(0, PARAM + N * 42 * 4, N * 9)], np.float64).reshape(N, 9)
+        for h in range(1, self.NH):                                  # merge the extra harts (else ~1/NH of grad)
+            xw = self.dev.rdn(0, GACC_X + (h - 1) * N * 9 * 4, N * 9)
+            ga = ga + np.array([_bf(x) for x in xw], np.float64).reshape(N, 9)
+        d_tx, d_ty = ga[:, 2], ga[:, 4]
+        asafe = np.maximum(a, 1e-8)
+        sa = np.sqrt(asafe); m12 = b / sa
+        t = np.maximum(c - b * b / asafe, 1e-8); m22 = np.sqrt(t)   # mirror het_x280.c:240
+        du = d_tx * (-sa)                                            # = g_gx (dL/du)
+        dv = d_tx * (-m12) + d_ty * (-m22)                          # = g_gy (dL/dv)
+        valid = np.isfinite(u) & np.isfinite(v) & np.isfinite(du) & np.isfinite(dv) & (zc > 0.2)
+        return dict(u=u, v=v, zc=zc, du=du, dv=dv, valid=valid)
+
     def _het(self, cmd, extra=None, tile=0, timeout=12.0):
         if extra: self.dev.wr(tile, X_HDR, extra)
         self.dev.wr(tile, X_CMD, [cmd]); r = self.dev.rd(tile, X_DB) + 1; self.dev.wr(tile, X_DB, [r])
