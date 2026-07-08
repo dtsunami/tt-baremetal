@@ -26,9 +26,13 @@ NSLOT, IMGW_A, IDLG, ORIG = 0x30005DF0, 0x30005DF4, 0x30005E00, 0x30006200
 # on-device bin (het cmd11) plumbed but DEFERRED — proj_sqrt precision on A=c/det (O(100+)) makes the device
 # bbox/front-12 selection differ from the host golden (all tiles got the same 12). Host bin below is correct.
 NHARTS_A, WCMD_A, IMG_BASE_A = 0x300027F0, 0x300027F4, 0x300027F8
-HGO, HDONE, LOSS_H, GACC_X = 0x30002800, 0x30002A00, 0x30002C00, 0x30280000
-TGT_BANK = 0x34000000                                 # resident bank: all view images (upload once)
-PARAM, TGT_IMG, OPB_O, PXBASE, GINO = 0x30100000, 0x30200000, 0x31000000, 0x32000000, 0x33000000
+HGO, HDONE, LOSS_H = 0x30002800, 0x30002A00, 0x30002C00
+# DYNAMIC GDDR map — must match het_x280.c::lay() EXACTLY. PARAM chain + gacc_x + tgt_img are N/image-derived
+# (see _layout); the worker/bin/view banks below are FIXED HIGH (independent of N so densify-resize can't move
+# them and the conductor CFG stays valid). GACC_X/TGT_IMG are computed per-N in _layout(), not constants.
+PARAM = 0x30100000
+OPB_O, PXBASE, GINO = 0x60000000, 0x61000000, 0x62000000    # per-slot operand / pixel / grad-inbox banks
+TGT_BANK = 0x66000000                                        # resident bank: all view images (upload once)
 OPS_O = PXS_O = GIS_O = 0x10000
 CFG, HUB = 0x3200, (8, 3)
 TILE, K, P = 16, 12, 32
@@ -75,7 +79,7 @@ class HetGridEngine:
             self.dev.wr(t, LOSS_H, [0] * 64)
             self.dev.wr(t, X_DB, [0]); self.dev.wr(t, X_DONE, [0])
             if t == self.tiles[0]:
-                self.dev.wr(t, GACC_X, [0] * (N * 9 * 3))
+                self.dev.wr(t, self._layout()["gacc_x"], [0] * (N * 9 * (NH - 1)))
                 for s in range(self.W): self.dev.wr(t, FLAG + s * ASTRIDE, [0]); self.dev.wr(t, ACK + s * ASTRIDE, [0])
             self.dev.load(t, 0, words)
             for _ in range(80):
@@ -107,6 +111,25 @@ class HetGridEngine:
         wr(coord, 0x2F000, _enc([1.0] * 1024), context=self.ctx)                # ones
         wr(coord, 0x30000, _enc(_pad([[1.0] * P])), context=self.ctx)           # ones1P
 
+    def _layout(self, N=None):
+        """DYNAMIC GDDR layout — MUST match het_x280.c::lay() EXACTLY. The param chain + gacc_x + current
+        target image are N/image-derived (grow from PARAM); worker/bin/view banks are fixed-high. Recomputed
+        from the CURRENT N so it shifts freely on densify-resize. Raises if the dynamic region would overrun
+        the fixed worker banks (loud over-capacity guard vs silent corruption)."""
+        N = self.N if N is None else int(N)
+        algn = lambda x: (x + 0xFFF) & ~0xFFF
+        m = PARAM + N * 14 * 4; v = m + N * 14 * 4; gacc = v + N * 14 * 4
+        coeff = gacc + N * 9 * 4; depth = coeff + N * 9 * 4; pub = depth + N * 4
+        gacc_x = algn(pub + N * 6 * 4)
+        tgt_img = algn(gacc_x + (self.NH - 1) * N * 9 * 4)
+        top = algn(tgt_img + self.imgw * self.imgh * 3 * 4)
+        if top > OPB_O:
+            raise RuntimeError(
+                f"dynamic GDDR layout overflow: N={N}, {self.imgw}x{self.imgh} -> dynamic top 0x{top:x} exceeds "
+                f"the worker-bank base 0x{OPB_O:x}. Lower TT_MAX_POINTS or TT_SIZE (ceiling ~2M Gaussians @ 1600px).")
+        return dict(param=PARAM, m=m, v=v, gacc=gacc, coeff=coeff, depth=depth, pub=pub,
+                    gacc_x=gacc_x, tgt_img=tgt_img, top=top, opb_o=OPB_O, pxbase=PXBASE, gino=GINO, tgt_bank=TGT_BANK)
+
     def set_params(self, params14):
         p = np.asarray(params14, np.float64).reshape(self.N, 14)
         self.dev.wr(0, PARAM, [_fb(p[o, j]) for o in range(self.N) for j in range(14)])
@@ -132,12 +155,12 @@ class HetGridEngine:
         Sources already resident after engine.step(): PUB[N*6]=[u,v,a,b,c,zc] at PARAM+N*61w, per-hart grad
         accumulators gacc0 at PARAM+N*42w (hart 0) + GACC_X partitions (harts 1..NH-1). MUST be called AFTER
         step() and BEFORE the next step's cmd2 (which zeroes gacc). Single-hub (tile 0) assumption."""
-        N = self.N
-        pub = np.array([_bf(x) for x in self.dev.rdn(0, PARAM + N * 61 * 4, N * 6)], np.float64).reshape(N, 6)
+        N = self.N; LO = self._layout()
+        pub = np.array([_bf(x) for x in self.dev.rdn(0, LO["pub"], N * 6)], np.float64).reshape(N, 6)
         u, v, a, b, c, zc = (pub[:, j] for j in range(6))
-        ga = np.array([_bf(x) for x in self.dev.rdn(0, PARAM + N * 42 * 4, N * 9)], np.float64).reshape(N, 9)
+        ga = np.array([_bf(x) for x in self.dev.rdn(0, LO["gacc"], N * 9)], np.float64).reshape(N, 9)
         for h in range(1, self.NH):                                  # merge the extra harts (else ~1/NH of grad)
-            xw = self.dev.rdn(0, GACC_X + (h - 1) * N * 9 * 4, N * 9)
+            xw = self.dev.rdn(0, LO["gacc_x"] + (h - 1) * N * 9 * 4, N * 9)
             ga = ga + np.array([_bf(x) for x in xw], np.float64).reshape(N, 9)
         d_tx, d_ty = ga[:, 2], ga[:, 4]
         asafe = np.maximum(a, 1e-8)
@@ -150,9 +173,11 @@ class HetGridEngine:
 
     # ---- W5 densify-resize: N is runtime on the x280 (read from each command header) → resize in place ----
     def cap(self):
-        """Max N in the current fixed GDDR map: the param chain PARAM..PUB = N*67 words (param14 + m14 + v14 +
-        gacc9 + coeff9 + depth1 + pub6) must stay below TGT_IMG. het_x280.c:24 flags relaying these to lift it."""
-        return (TGT_IMG - PARAM) // (67 * 4)
+        """Max N in the DYNAMIC GDDR map: the param chain (67w) + gacc_x ((NH-1)*9w) + current target image must
+        stay below the fixed worker-bank base OPB_O. Depends on image size — ~2M Gaussians @ 1600px."""
+        per = (67 + (self.NH - 1) * 9) * 4                     # dynamic-region bytes per Gaussian
+        img = self.imgw * self.imgh * 3 * 4
+        return max(1, (OPB_O - PARAM - img - 0x10000) // per)  # -64 KiB alignment slack
 
     def read_moments(self):
         """Adam m/v [N,14] resident at PARAM+N*14w / PARAM+N*28w (het_x280.c:225). For momentum-preserving edits."""
@@ -170,13 +195,13 @@ class HetGridEngine:
         m/v/gacc offsets from hdr[0]=N each command). Re-lays PARAM and ZEROES m/v/gacc at the new N-derived
         offsets (momentum reset; caller re-sets sliced momentum via set_moments for keep-mask edits). Single-hub."""
         p = np.asarray(newP14, np.float64).reshape(-1, 14); newN = p.shape[0]
-        assert 0 < newN <= self.cap(), f"resize N={newN} exceeds bare-metal fixed-map ceiling {self.cap()}"
+        assert 0 < newN <= self.cap(), f"resize N={newN} exceeds dynamic-map ceiling {self.cap()}"
         self.N = newN
         self.set_params(p)
-        M = PARAM + newN * 14 * 4; V = M + newN * 14 * 4; GACC = V + newN * 14 * 4
-        self.dev.wr(0, M, [0] * (newN * 14)); self.dev.wr(0, V, [0] * (newN * 14)); self.dev.wr(0, GACC, [0] * (newN * 9))
+        LO = self._layout()                                   # recomputed at the NEW N (offsets shift)
+        self.dev.wr(0, LO["m"], [0] * (newN * 14)); self.dev.wr(0, LO["v"], [0] * (newN * 14)); self.dev.wr(0, LO["gacc"], [0] * (newN * 9))
         for h in range(1, self.NH):
-            self.dev.wr(0, GACC_X + (h - 1) * newN * 9 * 4, [0] * (newN * 9))
+            self.dev.wr(0, LO["gacc_x"] + (h - 1) * newN * 9 * 4, [0] * (newN * 9))
 
     def _het(self, cmd, extra=None, tile=0, timeout=12.0):
         if extra: self.dev.wr(tile, X_HDR, extra)
@@ -206,11 +231,12 @@ class HetGridEngine:
         """cam16 = [Rv(9), tv(3), fx, fy, cx, cy]; tgt_flat = imgh*imgw*3 f32 (y,x,ch); lr14 = per-param LR.
         Returns scalar loss. Bins on host from device projection; orchestrates all tiles across W workers/NH harts."""
         T = {}; _c = time.time
+        tgt_img = self._layout()["tgt_img"]                                        # dynamic per-N target-image base
         t = _c(); self.dev.wr(0, X_CAM, [_fb(x) for x in cam16])
         if view_idx is not None and getattr(self, "_views_resident", False):
             self.dev.wr(0, IMG_BASE_A, [TGT_BANK + view_idx * self._img_stride])   # resident: 1-word write
         else:
-            self.dev.wr(0, TGT_IMG, [_fb(v) for v in tgt_flat]); self.dev.wr(0, IMG_BASE_A, [TGT_IMG])
+            self.dev.wr(0, tgt_img, [_fb(v) for v in tgt_flat]); self.dev.wr(0, IMG_BASE_A, [tgt_img])
         T["gt_up"] = _c() - t
         t = _c(); self._het(2, extra=[self.N, step]); T["proj"] = _c() - t     # project+whiten all params (multi-hart)
         if self.on_device_orch:
