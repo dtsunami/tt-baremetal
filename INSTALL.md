@@ -62,6 +62,8 @@ modinfo tenstorrent | grep ^version   # -> 2.8.0
 `tt-system-tools`, or set manually and reboot:
 
 ```bash
+cd ~
+git clone https://github.com/tenstorrent/tt-system-tools.git
 cd ~/tt-system-tools/hugepages-setup
 
 # 1. put the script where the service looks for it
