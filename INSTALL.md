@@ -78,8 +78,11 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now tenstorrent-hugepages.service 'dev-hugepages\x2d1G.mount'
 ```
 
-After reboot: `ls /dev/tenstorrent/` should show `0`, and
-`grep HugePages_Total /proc/meminfo` should be non-zero.
+```bash
+cat /sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages   # expect 4
+mount | grep hugepages-1G                                        # expect /dev/hugepages-1G mounted
+systemctl is-enabled tenstorrent-hugepages.service 'dev-hugepages\x2d1G.mount'  # both enabled
+```
 
 ---
 
