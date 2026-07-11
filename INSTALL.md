@@ -114,11 +114,20 @@ used was `tt_umd-096-selfcontained.cpython-310-x86_64-linux-gnu.so`. Keep that `
 
 ---
 
-## 4. SMI — `tt-smi` 4.1.2
+## 4. SMI — `tt-smi` from git repo
 
 ```bash
-python3 -m pip install --user tt-smi==4.1.2     # lands in ~/.local/bin + ~/.local/lib
-tt-smi --version    # -> 4.1.2
+python3 -m venv .ttvenv
+source .ttvenv/bin/activate
+git clone https://github.com/tenstorrent/tt-smi.git
+pip install -e tt-smi  # will link to tt-umd 0.9.5, prolly need to fork
+pip install -e tt-umd  # will complain about version but still install
+```
+
+Verify it works, should see blackhole card and linnk speed/width etc
+
+```bash
+tt-smi
 ```
 
 **Fork caveat (known-good workaround):** `tt-smi -r 0` completes the warm reset but then
