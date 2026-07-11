@@ -1,0 +1,49 @@
+diff --git a/tests/tt_metal/tt_metal/data_movement/sources.cmake b/tests/tt_metal/tt_metal/data_movement/sources.cmake
+index c2545c59d9b..3328b9bdde9 100644
+--- a/tests/tt_metal/tt_metal/data_movement/sources.cmake
++++ b/tests/tt_metal/tt_metal/data_movement/sources.cmake
+@@ -16,6 +16,7 @@ set(UNIT_TESTS_DATA_MOVEMENT_SRC
+     one_from_all/test_one_from_all.cpp
+     all_to_all/test_all_to_all.cpp
+     all_from_all/test_all_from_all.cpp
++    gather_scatter_3hop/test_gather_scatter_3hop.cpp
+     interleaved/test_interleaved.cpp
+     one_packet/test_one_packet.cpp
+     interleaved_to_sharded_hardcoded/test_interleaved_to_sharded_hardcoded.cpp
+diff --git a/tt_metal/programming_examples/contributed/CMakeLists.txt b/tt_metal/programming_examples/contributed/CMakeLists.txt
+index 29b61eab024..0b6c1190600 100644
+--- a/tt_metal/programming_examples/contributed/CMakeLists.txt
++++ b/tt_metal/programming_examples/contributed/CMakeLists.txt
+@@ -1,7 +1,11 @@
+ set(VECADD_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/vecadd/vecadd.cpp)
+ set(MULTICAST_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/multicast/multicast.cpp)
++set(JIT_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/jit/kerneljit.cpp)
++set(BOOTLOADER_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/bootloader/bootloader.cpp)
+ 
+ CREATE_PGM_EXAMPLES_EXE("${VECADD_SRCS}" "contributed") # output binaries to build/programming_examples/contributed
+ CREATE_PGM_EXAMPLES_EXE("${MULTICAST_SRCS}" "contributed")
++CREATE_PGM_EXAMPLES_EXE("${JIT_SRCS}" "contributed")
++CREATE_PGM_EXAMPLES_EXE("${BOOTLOADER_SRCS}" "contributed")
+ 
+ add_custom_target(contributed DEPENDS ${PROGRAMMING_EXAMPLES_TEST_TARGETS})
+diff --git a/tt_metal/programming_examples/contributed/multicast/multicast.cpp b/tt_metal/programming_examples/contributed/multicast/multicast.cpp
+index 18b4b31f42f..044f34912d0 100644
+--- a/tt_metal/programming_examples/contributed/multicast/multicast.cpp
++++ b/tt_metal/programming_examples/contributed/multicast/multicast.cpp
+@@ -210,14 +210,14 @@ int main(int /*argc*/, char** argv) {
+         ////////// COORDINATOR KERNEL SETUP //////////
+         KernelHandle coordinator_kernel_id = CreateKernel(
+             program,
+-            "tt_metal/programming_examples/contributed/multicast/kernels/dataflow/coordinator_kernel.cpp",
++            "zzzcontributed/kernels/dataflow/coordinator_kernel.cpp",
+             sender_core_logical,
+             DataMovementConfigIn);
+ 
+         ////////// DATAFLOW KERNELS SETUP //////////
+         KernelHandle inbound_kernel_id = CreateKernel(
+             program,
+-            "tt_metal/programming_examples/contributed/multicast/kernels/dataflow/inbound_kernel.cpp",
++            "vvkernels/dataflow/inbound_kernel.cpp",
+             receiver_cores_logical,
+             DataMovementConfigIn);
+         KernelHandle outbound_kernel_id = CreateKernel(
