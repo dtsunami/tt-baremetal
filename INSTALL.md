@@ -62,9 +62,20 @@ modinfo tenstorrent | grep ^version   # -> 2.8.0
 `tt-system-tools`, or set manually and reboot:
 
 ```bash
-git clone https://github.com/tenstorrent/tt-system-tools.git ~/tt-system-tools
-cd ~/tt-system-tools && sudo ./hugepages-setup.sh
-sudo reboot
+cd ~/tt-system-tools/hugepages-setup
+
+# 1. put the script where the service looks for it
+sudo mkdir -p /opt/tenstorrent/bin
+sudo cp hugepages-setup.sh /opt/tenstorrent/bin/
+sudo chmod +x /opt/tenstorrent/bin/hugepages-setup.sh
+
+# 2. install both systemd units (keep the escaped mount filename EXACTLY)
+sudo cp tenstorrent-hugepages.service /etc/systemd/system/
+sudo cp 'dev-hugepages\x2d1G.mount' /etc/systemd/system/
+
+# 3. reload + enable + start now (no reboot needed to test)
+sudo systemctl daemon-reload
+sudo systemctl enable --now tenstorrent-hugepages.service 'dev-hugepages\x2d1G.mount'
 ```
 
 After reboot: `ls /dev/tenstorrent/` should show `0`, and
