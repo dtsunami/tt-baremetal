@@ -1,0 +1,362 @@
+{
+ "kind": "fp",
+ "kernel": "src/bhtop/kernels/x280/vf_margin_fp/vf_margin_fp.c",
+ "freq_mhz": 1750,
+ "vdd_max": 900,
+ "vdd_min": 700,
+ "points": [
+  {
+   "vcore": 824,
+   "temp": 58.5,
+   "wedged": false,
+   "harts": {
+    "0": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6267
+    },
+    "1": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6218
+    },
+    "2": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6260
+    },
+    "3": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6165
+    }
+   }
+  },
+  {
+   "vcore": 814,
+   "temp": 58.4,
+   "wedged": false,
+   "harts": {
+    "0": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6258
+    },
+    "1": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6246
+    },
+    "2": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6252
+    },
+    "3": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6171
+    }
+   }
+  },
+  {
+   "vcore": 804,
+   "temp": 58.9,
+   "wedged": false,
+   "harts": {
+    "0": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6257
+    },
+    "1": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6239
+    },
+    "2": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6248
+    },
+    "3": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6170
+    }
+   }
+  },
+  {
+   "vcore": 794,
+   "temp": 58.9,
+   "wedged": false,
+   "harts": {
+    "0": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6266
+    },
+    "1": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6224
+    },
+    "2": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6253
+    },
+    "3": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6172
+    }
+   }
+  },
+  {
+   "vcore": 784,
+   "temp": 59.2,
+   "wedged": false,
+   "harts": {
+    "0": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6274
+    },
+    "1": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6254
+    },
+    "2": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6272
+    },
+    "3": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6173
+    }
+   }
+  },
+  {
+   "vcore": 775,
+   "temp": 59.2,
+   "wedged": false,
+   "harts": {
+    "0": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6268
+    },
+    "1": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6250
+    },
+    "2": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6260
+    },
+    "3": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6172
+    }
+   }
+  },
+  {
+   "vcore": 765,
+   "temp": 59.1,
+   "wedged": false,
+   "harts": {
+    "0": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6284
+    },
+    "1": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6274
+    },
+    "2": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6281
+    },
+    "3": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6184
+    }
+   }
+  },
+  {
+   "vcore": 755,
+   "temp": 59.1,
+   "wedged": false,
+   "harts": {
+    "0": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6284
+    },
+    "1": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6277
+    },
+    "2": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6277
+    },
+    "3": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6189
+    }
+   }
+  },
+  {
+   "vcore": 745,
+   "temp": 59.4,
+   "wedged": false,
+   "harts": {
+    "0": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6279
+    },
+    "1": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6263
+    },
+    "2": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6265
+    },
+    "3": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6190
+    }
+   }
+  },
+  {
+   "vcore": 736,
+   "temp": 59.6,
+   "wedged": false,
+   "harts": {
+    "0": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6276
+    },
+    "1": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6264
+    },
+    "2": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6267
+    },
+    "3": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6179
+    }
+   }
+  },
+  {
+   "vcore": 726,
+   "temp": 59.4,
+   "wedged": false,
+   "harts": {
+    "0": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6269
+    },
+    "1": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6252
+    },
+    "2": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6256
+    },
+    "3": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6181
+    }
+   }
+  },
+  {
+   "vcore": 716,
+   "temp": 59.4,
+   "wedged": false,
+   "harts": {
+    "0": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6278
+    },
+    "1": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6253
+    },
+    "2": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6270
+    },
+    "3": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6179
+    }
+   }
+  },
+  {
+   "vcore": 707,
+   "temp": 59.4,
+   "wedged": false,
+   "harts": {
+    "0": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6281
+    },
+    "1": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6251
+    },
+    "2": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6279
+    },
+    "3": {
+     "errs": 0,
+     "derrs": 0,
+     "dpass": 6177
+    }
+   }
+  }
+ ],
+ "first_fail_mv": null,
+ "vmin_mv": 700
+}

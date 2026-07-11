@@ -103,6 +103,25 @@ class L2cpu:
             self._chip = PciChip(pci_interface=self.device)
         return self._chip
 
+    def hold_power(self, aiclk=False, mrisc=True, tensix=True, l2cpu=True, pcie=False):
+        """Assert the KMD per-domain power-enable flags on THIS pyluwen fd so the named domains stay OUT of
+        clock-gate for as long as this L2cpu (its PciChip fd) is alive. l2cpu=True -> TT_POWER_FLAG_L2CPU_ENABLE
+        (1<<3, docstring '0=Clock Gate L2CPU'): the candidate fix for the idle-gate NoC/NIU wedge on the het
+        pipeline, which drives the chip over exalens and otherwise never calls set_power, leaving the L2CPU
+        domain free to gate during idle windows (render-wait, step boundary) -> racy gate-exit wedges the tile
+        NIU (host read/DMA timeout). Default = the exact UMD 'busy' set MRISC_PHY_WAKEUP|L2CPU_ENABLE|
+        TENSIX_ENABLE (pci_device.cpp:1066) — asserted TOGETHER because L2CPU needs the DRAM PHY (MRISC) awake;
+        the lone l2cpu bit risks an invalid combination (-> EINVAL). The KMD OR-aggregates power_flags across
+        all open fds, so this one fd holding the bits un-gates the whole chip; contribution drops when the fd
+        closes -> fully reversible. Needs KMD >=2.6.0 (host is 2.8.0); best-effort — missing binding/old KMD
+        just no-ops."""
+        try:
+            self.chip.set_power(aiclk=aiclk, mrisc=mrisc, tensix=tensix, l2cpu=l2cpu, pcie=pcie)
+            return True
+        except Exception as e:                                             # noqa: BLE001
+            print(f"[l2cpu] hold_power failed (clock-gating NOT disabled): {type(e).__name__}: {e}", flush=True)
+            return False
+
     # ---- L2CPU NoC (tt-exalens) ----
     def rd(self, tile, addr):
         from ttexalens.tt_exalens_lib import read_words_from_device
@@ -125,12 +144,18 @@ class L2cpu:
             raise Hang(f"read tile{tile} 0x{addr:X} x{n}: {type(e).__name__}: {e}") from e
 
     def wr(self, tile, addr, words):
-        from ttexalens.tt_exalens_lib import write_words_to_device
+        # Fast bulk write: marshal to bytes with numpy (no per-element Python) + the DMA-capable
+        # write_to_device(bytes) path. write_words_to_device does b"".join(x.to_bytes(4)...) over the int
+        # list — ~150x slower on big buffers (20 MB gt: 462ms -> 3ms, measured + bit-identical on silicon).
+        # Accepts a list of u32 words OR a numpy uint32 array; small writes (doorbells) auto-fall to the
+        # register path inside write_to_device (below dma_threshold).
+        from ttexalens.tt_exalens_lib import write_to_device
+        import numpy as np
         if not (0 <= addr <= PASS_HI):
             raise ValueError(f"addr 0x{addr:X} outside safe passthrough window")
+        buf = np.ascontiguousarray(words, dtype=np.uint32).tobytes()   # little-endian words (== x.to_bytes(4,"little"))
         try:
-            write_words_to_device(self.loc[tile], addr, list(words),
-                                  context=self.ctx, noc_id=0, safe_mode=False)
+            write_to_device(self.loc[tile], addr, buf, context=self.ctx, noc_id=0, safe_mode=False)
         except Exception as e:                       # noqa: BLE001
             raise Hang(f"write tile{tile} 0x{addr:X}: {type(e).__name__}: {e}") from e
 
@@ -377,6 +402,126 @@ class L2cpu:
             "asic_temp_c": temp, "fan_rpm": g("fan_rpm"),
             "throttler": g("throttler"), "power_limit_w": g("board_power_limit"),
         }
+
+    # ---- ARC DVFS / voltage margining (pyluwen arc_msg — the SAFE ARC transport, same as PLL/telemetry) ----
+    # BH ARC message codes mirror tt-umd device/api/.../blackhole_arc.hpp (ArcMessageType). pyluwen/luwen wrap the
+    # code with the 0xAA00 "valid message" prefix (matches tt-llk python_tests/helpers/device.py). vcore is NOT a
+    # writable register on BH — it's CMFW/AVS-driven, auto-scaled to the AICLK perf-state. GO_BUSY is ttnn's lever
+    # (=> ~810 mV @ 1350 MHz busy point); FORCE_VDD/FORCE_AICLK pin rail/clock past the aiclk_ppm governor. The
+    # x280 CORE clock is a SEPARATE PLL (set_core_freq) that merely RIDES this shared rail. Voltage MUST lead
+    # clock. Every send is code-allowlisted + value-clamped; run get_voltage() (a pure read) as a canary first.
+    # Full RE + ladder + numbers: memory bh-arc-dvfs-voltage.
+    ARC_PREFIX      = 0xAA00
+    MSG_GET_VOLTAGE = 0x13
+    MSG_GET_AICLK   = 0x34
+    MSG_GO_BUSY     = 0x52          # AICLK_GO_BUSY
+    MSG_GO_IDLE     = 0x54          # AICLK_GO_LONG_IDLE
+    MSG_FORCE_AICLK = 0x33
+    MSG_FORCE_VDD   = 0x39
+    _ARC_MSG_ALLOW  = {0x13, 0x34, 0x52, 0x54, 0x33, 0x39}   # DVFS only — NEVER reset/flash/i2c/switch-vout codes
+    SAFE_VCORE_MV   = 950          # hard ceiling regardless of vdd_max (convex top-end budget for x280@1750)
+    SAFE_VCORE_STEP = 40           # max mV change per force_vdd call — force small steps
+    EXPLORE_VCORE_MV = 1050        # allow_over ceiling: modest over-volt for freq exploration (<< ~1.3V process max)
+    EXPLORE_FBDIV_MAX = 210        # set_fbdiv_explore cap: fbdiv 140=1750 MHz -> 210 ~ 2.6 GHz (well past fail)
+
+    def arc_msg(self, code, arg0=0, arg1=0, wait=True, timeout=1.0, _raw=False):
+        """Send ONE allowlisted ARC DVFS message over the safe pyluwen transport (NOT NoC-to-ARC). `code` = the
+        raw BH ArcMessageType (e.g. 0x52); the 0xAA00 prefix is applied unless _raw. Returns the pyluwen reply."""
+        if code not in self._ARC_MSG_ALLOW:
+            raise ValueError(f"ARC msg 0x{code:02X} not in DVFS allowlist {sorted(hex(c) for c in self._ARC_MSG_ALLOW)}")
+        msg = code if _raw else (self.ARC_PREFIX | code)
+        try:
+            return self.chip.arc_msg(msg, wait_for_done=wait, arg0=arg0, arg1=arg1, timeout=timeout)
+        except Exception as e:                       # noqa: BLE001
+            raise Hang(f"arc_msg 0x{msg:04X}(arg0={arg0},arg1={arg1}): {type(e).__name__}: {e}") from e
+
+    def limits(self):
+        """Firmware safety ceilings (live telemetry, read-only): the vcore window + AICLK/current/power/thermal
+        clamps. Read BEFORE margining — never exceed vdd_max / aiclk_fmax (CMFW clamps FORCE_VDD to vdd_max)."""
+        t = self.chip.get_telemetry()
+        def g(n):
+            try: return getattr(t, n)
+            except Exception: return None
+        vl = g("vdd_limits") or 0
+        return {"vdd_min_mv": vl & 0xFFFF, "vdd_max_mv": (vl >> 16) & 0xFFFF,
+                "aiclk_fmax_mhz": g("aiclk_limit_max"), "tdc_max_a": g("tdc_limit_max"),
+                "tdp_max_w": g("tdp_limit_max"), "thm_throttle_c": g("thm_limit_throttle"),
+                "board_power_limit_w": g("board_power_limit")}
+
+    def monitor(self):
+        """One-shot safety snapshot + a `safe` verdict vs abort thresholds. Poll BETWEEN margining steps; if not
+        safe, back off / perf_idle() / reset. `heartbeat` must ADVANCE across calls (frozen => wedged)."""
+        p = self.power(); lim = self.limits(); t = self.chip.get_telemetry()
+        def g(n):
+            try: return getattr(t, n)
+            except Exception: return None
+        temp, thr = p.get("asic_temp_c"), p.get("throttler")
+        vmax, vc = lim.get("vdd_max_mv"), p.get("vcore_mv")
+        alarms = []
+        if isinstance(temp, (int, float)) and temp > 85: alarms.append(f"temp {temp}C>85")
+        if thr not in (0, None): alarms.append(f"throttler={thr}")
+        if vmax and vc and vc > vmax: alarms.append(f"vcore {vc}>vdd_max {vmax}")
+        return {**p, **lim, "vreg_temp_c": g("vreg_temperature"),
+                "heartbeat": g("timer_heartbeat"), "safe": not alarms, "alarms": alarms}
+
+    def get_voltage(self):
+        """CANARY + read: send GET_VOLTAGE (a pure read, no state change) and cross-check the reply against
+        telemetry vcore. Run this FIRST to confirm the arc_msg path/prefix work on THIS card without risk."""
+        reply = self.arc_msg(self.MSG_GET_VOLTAGE)
+        return {"reply": reply, "telemetry_vcore_mv": self.chip.get_telemetry().vcore}
+
+    def perf_busy(self):
+        """Rung 1 (ttnn-safe): AICLK_GO_BUSY — request the busy perf-state so ARC/AVS raises the SHARED vcore to
+        the ~810 mV / 1350 MHz point. Gives the x280 PLL headroom; then set_core_freq(1750) rides it. LATCHED (no
+        auto-revert), but the aiclk_ppm governor may still droop it mid-run if it reads the load as idle."""
+        before = self.power().get("vcore_mv")
+        r = self.arc_msg(self.MSG_GO_BUSY, 0, 0)
+        return {"ok": True, "msg": "GO_BUSY", "reply": r, "vcore_before_mv": before}
+
+    def perf_idle(self):
+        """Restore the idle perf-state (AICLK_GO_LONG_IDLE): drops the shared rail back to ~711 mV. Call to unwind
+        a margining experiment or before leaving the card."""
+        r = self.arc_msg(self.MSG_GO_IDLE, 0, 0)
+        return {"ok": True, "msg": "GO_LONG_IDLE", "reply": r}
+
+    def force_aiclk(self, mhz):
+        """Rung 2 (governor-defeating): FORCE_AICLK — pin AICLK at `mhz`, CMFW applies its own matched vcore.
+        Clamped to the live aiclk_fmax. Arg-unit (MHz) is the documented intent but CLOSED CMFW — verify the
+        actual effect via monitor() before trusting it."""
+        fmax = self.limits().get("aiclk_fmax_mhz")
+        if fmax and mhz > fmax:
+            raise ValueError(f"aiclk {mhz} > firmware fmax {fmax}; refuse (would be clamped/hang)")
+        r = self.arc_msg(self.MSG_FORCE_AICLK, arg0=int(mhz))
+        return {"ok": True, "msg": "FORCE_AICLK", "mhz": mhz, "reply": r}
+
+    def force_vdd(self, mv, allow_step=False, allow_over=False):
+        """Rung 2: FORCE_VDD — pin the shared vcore at `mv`. VERIFIED on silicon: arg unit = mV, ~10 mV regulator
+        granularity, CMFW clamps to live vdd_max (900). Guards: refuses mv > SAFE_VCORE_MV (or EXPLORE_VCORE_MV
+        when allow_over), mv > live vdd_max (unless allow_over — to probe/exceed the firmware clamp), or a jump >
+        SAFE_VCORE_STEP (unless allow_step). Voltage must lead clock; monitor() after every step."""
+        lim = self.limits(); vmax = lim.get("vdd_max_mv") or self.SAFE_VCORE_MV
+        cur = self.power().get("vcore_mv") or 0
+        cap = self.EXPLORE_VCORE_MV if allow_over else self.SAFE_VCORE_MV
+        if mv > cap: raise ValueError(f"{mv} mV > ceiling {cap} (allow_over raises to {self.EXPLORE_VCORE_MV})")
+        if not allow_over and vmax and mv > vmax:
+            raise ValueError(f"{mv} mV > live vdd_max {vmax} (CMFW would clamp; allow_over to probe past it)")
+        if not allow_step and cur and abs(mv - cur) > self.SAFE_VCORE_STEP:
+            raise ValueError(f"jump {cur}->{mv} mV exceeds {self.SAFE_VCORE_STEP} mV/step; step up gradually "
+                             "(allow_step=True overrides)")
+        r = self.arc_msg(self.MSG_FORCE_VDD, arg0=int(mv))
+        return {"ok": True, "msg": "FORCE_VDD", "mv": mv, "vcore_before_mv": cur, "vdd_max_mv": vmax, "reply": r}
+
+    def set_fbdiv_explore(self, fb):
+        """EXPERIMENTAL frequency overclock: glide the L2CPU core-PLL fbdiv to `fb` (per-lane postdivs left as-is)
+        from the CURRENT state. Call set_core_freq(1750) first so postdiv=[1,1,1,1] (fbdiv 140 = 1750 MHz, so
+        each +1 fbdiv ~= +12.5 MHz). Bounded to EXPLORE_FBDIV_MAX; a too-high fbdiv can unlock the PLL / wedge the
+        clock -> recover with tt-smi -r 0. Returns the telemetry-MEASURED core MHz (empirical, no PLL model)."""
+        if not (120 <= fb <= self.EXPLORE_FBDIV_MAX):
+            raise ValueError(f"fbdiv {fb} outside [120,{self.EXPLORE_FBDIV_MAX}] — refuse (unlock/hang risk)")
+        b1 = bytearray(4); self.chip.axi_read(PLL4_BASE + PLL_CNTL_1, b1); p1 = _PLL1.from_buffer(b1)
+        p1.step_fbdiv(self.chip, fb)                       # glide +-1/step (same as set_pll)
+        time.sleep(0.05)
+        return {"fbdiv": fb, "core_mhz": self.clocks()["core_l2cpu_mhz"]}
 
     def peek(self, tile, addr, n=1):
         return self.rdn(tile, addr, n) if n > 1 else self.rd(tile, addr)

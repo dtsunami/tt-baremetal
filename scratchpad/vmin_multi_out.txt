@@ -1,0 +1,52 @@
+reset...
+settled; init
+bringup {'ok': True, 'l2cpu_reset': 31}
+pattern=fp golden 0xfad5856d all-eq True
+
+  2100 MHz (anchor 803mV):
+    811mV ['P', 'P', 'P', 'P']
+    803mV ['P', 'P', 'P', 'P']
+    795mV ['P', 'P', 'P', 'P']
+    787mV ['P', 'P', 'P', 'P']
+    780mV ['P', 'P', 'P', 'P']
+    771mV ['P', 'P', 'P', 'P']
+    763mV ['P', 'P', 'P', 'F'] de=[0, 0, 0, 2]
+  => 2100 MHz chip Vmin = 771mV limiter=hart3
+
+  2100 MHz (anchor 844mV):
+    851mV ['P', 'P', 'P', 'P']
+    843mV ['P', 'P', 'P', 'P']
+    835mV ['P', 'P', 'P', 'P']
+    827mV ['P', 'P', 'P', 'P']
+    820mV ['P', 'P', 'P', 'P']
+    812mV ['P', 'P', 'P', 'P']
+    804mV ['P', 'P', 'P', 'P']
+    795mV ['P', 'P', 'P', 'F'] de=[0, 0, 0, 57]
+  => 2100 MHz chip Vmin = 804mV limiter=hart3
+
+  2300 MHz (anchor 885mV):
+    891mV ['P', 'P', 'P', 'P']
+    883mV ['P', 'P', 'P', 'P']
+    875mV ['P', 'P', 'P', 'P']
+    868mV ['P', 'P', 'P', 'P']
+    860mV ['P', 'P', 'P', 'P']
+    852mV ['P', 'P', 'P', 'P']
+    844mV ['P', 'P', 'P', 'P']
+    836mV ['P', 'P', 'P', 'F'] de=[0, 0, 0, 5]
+  => 2300 MHz chip Vmin = 844mV limiter=hart3
+
+  2400 MHz (anchor 900mV):
+    905mV ['P', 'P', 'P', 'P']
+    897mV ['P', 'P', 'P', 'P']
+    890mV ['P', 'P', 'P', 'P']
+    882mV ['P', 'P', 'P', 'P']
+    874mV ['P', 'P', 'P', 'F'] de=[0, 0, 0, 180]
+  => 2400 MHz chip Vmin = 882mV limiter=hart3
+
+  2400 MHz (anchor 900mV):
+    905mV ['F', 'P', 'P', 'F'] de=[352, 0, 0, 4677]
+  => 2400 MHz chip Vmin = >900mV (>= ceil 900)
+
+restoring ...
+idle {'ok': True, 'msg': 'GO_LONG_IDLE', 'reply': (0, 0)} 719 mV @ 200 MHz
+wrote scratchpad/vmin.json

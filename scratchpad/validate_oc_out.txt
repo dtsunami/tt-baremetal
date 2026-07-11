@@ -1,0 +1,12 @@
+reset_state {'raw': 31, 'released': True, 'wedged': False, 'bit': 4}
+harts already released (prior bringup) -> load over them, skip bringup
+golden ['0xfad5856d', '0xfad5856d', '0xfad5856d', '0xfad5856d'] all-eq True
+vcore -> 907 mV
+PLL fbdiv 192 -> 2400 MHz
+@ 2400 MHz 907 mV 59.1C safe=False:
+  hart0: dpass=40147 derr=0 OK
+  hart1: dpass=40325 derr=0 OK
+  hart2: dpass=40075 derr=0 OK
+  hart3: dpass=40377 derr=0 OK
+=== 2.4 GHz @ 900 mV: STABLE (error-free, all harts) ===
+restored: {'ok': True, 'msg': 'GO_LONG_IDLE', 'reply': (0, 0)} 720 mV @ 200 MHz

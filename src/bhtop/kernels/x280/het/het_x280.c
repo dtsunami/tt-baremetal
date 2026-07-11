@@ -29,7 +29,7 @@
 #define PXS_O   0x00010000u   /* per-slot pixel-bank stride */
 #define GIS_O   0x00010000u   /* per-slot grad-inbox stride */
 #define GDDR_TOP 0xF0000000u  /* stay well under the 4 GiB local GDDR window; lay() asserts top < this */
-typedef struct { uint32_t param,m,v,gacc,coeff,depth,pub,gacc_x,tgt_img,opb_o,pxbase,gino,idlgb,depb,occ,tgt_bank,desc,top; } layout_t;
+typedef struct { uint32_t param,m,v,gacc,coeff,depth,pub,gacc_x,tgt_img,opb_o,pxbase,gino,idlgb,depb,occ,tgt_bank,desc,gcompact,top; } layout_t;
 static inline uint32_t algn(uint32_t x){ return (x + 0xFFFu) & ~0xFFFu; }   /* 4 KiB align (multiple of 0x800 tile granule) */
 static inline void lay(uint32_t N, int IMGW, int IMGH, int W, int NH, layout_t* L){
     if(NH<1)NH=1; if(IMGW<16)IMGW=16; if(IMGH<16)IMGH=16; (void)W;
@@ -57,8 +57,11 @@ static inline void lay(uint32_t N, int IMGW, int IMGH, int W, int NH, layout_t* 
     L->occ     = 0x65000000u;
     L->tgt_bank= 0x66000000u;
     L->desc    = 0x68000000u;   /* W4 worker-produce: per-slot compact coeff descriptor [K,ox,oy,coeff[12*9]], stride DESC_STRIDE */
+    L->gcompact= 0x6A000000u;   /* W4 STAGE-2 worker-consume: per-slot compact grad buffer [K*9 + loss], stride GC_STRIDE */
 }
 #define DESC_STRIDE 0x800u     /* per-slot descriptor: 3 hdr + 12*9 coeff words = 111 words < 0x800 */
+#define DESC_IMG    120u       /* descriptor word: CURRENT view's target-image base (conductor reads gt from it —
+                                * must track the resident view IMG_BASE_A, NOT the boot-time cfg[8]=tgt_img) */
 /* Per-slot FLAG/ACK on their OWN 64B line — concurrent 4B NoC writes to adjacent words in one granule race
  * and get clobbered (silicon-observed: 2 of 6 workers' acks lost at 4B stride). 0x40 stride = one line/slot. */
 #define FLAG_B  0x30006400u
@@ -68,6 +71,22 @@ static inline void lay(uint32_t N, int IMGW, int IMGH, int W, int NH, layout_t* 
  * workers. cmd9 partitions slots s%NH==hid across harts, each consuming into its OWN gacc/loss (no scatter-add
  * race), cmd1 merges. HGO/HDONE/LOSS_H each on own 64B line (concurrent-write granule rule). */
 #define WPROD_A  0x300027E0u  /* W4 worker-produce flag: 1 => conductor tilizes locally, x280 skips produce */
+#define WCONS_A  0x300027D0u  /* W4 STAGE-2 worker-consume flag: 1 => conductor detilizes+MACs locally, x280 just
+                               * scatter-adds the compact per-Gaussian grads (skips the uncached GINO tile reads) */
+#define GC_STRIDE   0x800u    /* per-slot compact grad buffer stride (160 f32 words = 640B) */
+#define GC_LOSS_OFF 144u      /* compact[144] = tile SSE loss (must match conductor.c) */
+#define BINCAP_A   0x300027D4u /* host-set max per-Gaussian bin HALF-span (tiles); <=0 => DEFAULT_BINCAP; huge => off */
+#define BINCAP_N_A 0x300027D8u /* kernel writes: # Gaussians whose bbox got clamped this bin (degenerate-splat count) */
+#define NOCPACE_A  0x300027E4u /* host-set: drain outstanding NoC stores every N Gaussians/hart (0=off). Bounds the
+                                  concurrent in-flight GDDR txns per hart so NH harts can't flood+wedge the shared tile NIU */
+#define NOC_DRAIN(a,b,c) do{ __asm__ volatile("fence rw,rw":::"memory"); \
+    volatile uint32_t _dx=*(volatile uint32_t*)(a),_dy=*(volatile uint32_t*)(b),_dz=*(volatile uint32_t*)(c); \
+    (void)_dx;(void)_dy;(void)_dz; }while(0)   /* fence + read-back EACH written region => full store-buffer drain */
+#define DEFAULT_BINCAP 8      /* default half-span: a splat may touch at most (2*8+1)^2=289 tiles around its center */
+#define XPROG_A 0x30004030u   /* live breadcrumb: leader writes (phase<<24 | index) here; host polls it during a cmd
+                               * and keeps the last value read before a NoC0 hang -> pins the wedging op. phases:
+                               * 1=bin 2=dispatch 3=consume 4=adam 5=proj. Negligible single-store; always on. */
+#define XPROG(v) do{ ((volatile uint32_t*)XPROG_A)[0]=(uint32_t)(v); }while(0)
 #define NHARTS_A 0x300027F0u  /* host-set hart count (1..4) */
 #define WCMD_A   0x300027F4u  /* which slice the workers run this dispatch: 2=project 1=adam 9=orchestrate */
 #define WORKERS_A 0x300027FCu /* number of Tensix workers (slots/batch) — host writes once; cmd10 reads for on-device dispatch */
@@ -78,6 +97,33 @@ static inline void lay(uint32_t N, int IMGW, int IMGH, int W, int NH, layout_t* 
 #define HDONE    0x30002A00u  /* worker->leader done, +h*0x40 */
 #define LOSS_H   0x30002C00u  /* per-hart partial loss, +h*0x40 */
 /* GACC_X (per-hart extra gacc, hart h>0) now computed by lay() (dynamic). */
+/* ---- HET-BARRIER HARDENING: per-hart liveness + state breadcrumbs + watchdog gate (own 64B lines) ------
+ * The old barrier spun a fixed 40M loop on HDONE and BROKE on timeout. A break on a merely-SLOW worker let
+ * the leader bump HGO to the next epoch while that worker was still finishing the previous one -> the worker
+ * fell a phase behind and cmd10's tail leaked into cmd1 (the ~12s stall). The fix: workers publish a
+ * heartbeat (WHB) inside every long spin/loop; the leader's barrier waits as long as the heartbeat is
+ * ADVANCING (worker alive, however long it legitimately takes) and aborts ONLY a hart whose heartbeat is
+ * FROZEN (genuinely wedged). No premature break -> no desync, for EVERY config. */
+#define WHB      0x30002400u  /* worker heartbeat, +h*0x40 — bumped inside long spins/loops */
+#define WDIAG    0x30002500u  /* worker breadcrumb, +h*0x40: [0]=state [1]=ring [2]=slot [3]=ackspin [4]=ns */
+#define WDOG_EN  0x30002600u  /* host gate: 1 => watchdog barrier (default/fix); 0 => legacy 40M spin (repro) */
+#define WERR     0x30002604u  /* leader sets nonzero when a barrier aborts a dead hart (host surfaces + resets) */
+#define WS_IDLE 0u
+#define WS_ENTER 1u
+#define WS_PRODUCE 2u
+#define WS_SIGNAL 3u
+#define WS_WAITACK 4u
+#define WS_CONSUME 5u
+#define WS_DONE 6u
+#define WS_PROJ 10u
+#define WS_ADAM 11u
+#define WDOG_LIMIT 40000000u  /* leader iters of NO heartbeat change => dead hart. A live worker heartbeats
+                               * every ~16k inner spins (~<20ms), so a beat frozen for ~12s is unambiguous. */
+static inline void wbeat(uint32_t hid){ ((volatile uint32_t*)(WHB+hid*0x40u))[0]++; }
+static inline void wstate(uint32_t hid,uint32_t st,uint32_t ring,uint32_t slot,uint32_t ackspin,uint32_t ns){
+    volatile uint32_t* d=(volatile uint32_t*)(WDIAG+hid*0x40u);
+    d[0]=st; d[1]=ring; d[2]=slot; d[3]=ackspin; d[4]=ns;
+}
 static inline uint64_t rdcycle(void){ uint64_t c; __asm__ volatile("rdcycle %0":"=r"(c)); return c; }
 static inline uint32_t f2bf(float x){ union{float f; uint32_t u;} v; v.f=x; uint32_t b=v.u; b+=0x7FFFu+((b>>16)&1u); return (b>>16)&0xFFFFu; }
 static inline float bf2f(uint32_t h){ union{uint32_t u; float f;} v; v.u=(h&0xFFFFu)<<16; return v.f; }
@@ -151,6 +197,17 @@ static void consume_slot(int slot, int K, volatile int* ordr, volatile float* ga
             ga[6]+=fsan(dc0); ga[7]+=fsan(dc1); ga[8]+=fsan(dc2); }
     }
 }
+/* W4 STAGE-2 worker-consume: the conductor already detilized this tile's grads from its LOCAL L1 + did the
+ * integer dLdcolor MAC + SSE, and NoC-wrote a COMPACT [K*9 f32 grads + loss@GC_LOSS_OFF] buffer to GCOMPACT[slot].
+ * The x280 just scatter-adds it into gacc[global] + sums loss — NO uncached GINO tile detilize, NO hub MAC. This
+ * moves the ~45% consume stage off the 4-hart hub onto the 120-worker grid (the biggest orch10 lever). */
+static void consume_compact(int slot, int K, volatile int* ordr, volatile float* gacc, volatile float* loss, uint32_t gcompact){
+    if(K>16)K=16; volatile int *ors=ordr+slot*16;
+    volatile float* comp=(volatile float*)(uint64_t)(gcompact+(uint32_t)slot*GC_STRIDE);
+    for(int i=0;i<K;i++){ int gid=ors[i]; volatile float *ga=gacc+(uint64_t)gid*9; volatile float* c=comp+(uint32_t)i*9;
+        for(int j=0;j<9;j++) ga[j]+=fsan(c[j]); }
+    loss[0]+=fsan(comp[GC_LOSS_OFF]);
+}
 
 static inline int flr(float x){ int i=(int)x; return (x<(float)i)?i-1:i; }   /* floor (host uses math.floor) */
 static inline double proj_sqrtd(double x){ double r; __asm__("fsqrt.d %0,%1":"=f"(r):"f"(x)); return r; }
@@ -176,18 +233,36 @@ static void bin_insert(int t, int gid, float dep, uint32_t idlgb, uint32_t depb)
  * same 12 nearest. x280 has hardware FP64 (fsqrt.d, fdiv.d), so this is exact and cheap. */
 static void do_device_bin(volatile float* pub, uint32_t N, int ntx, int nty, uint32_t idlgb, uint32_t depb, uint32_t occ){
     int ntile=ntx*nty;
+    int hcap=((volatile int*)BINCAP_A)[0]; if(hcap<=0) hcap=DEFAULT_BINCAP;   /* max per-splat half-span in tiles */
+    uint32_t ncap=0, nnan=0;                                                  /* clamped-degenerate / non-finite-skipped */
     for(int t=0;t<ntile;t++){ ((volatile int*)(idlgb+(uint32_t)t*0x40u))[0]=0; ((volatile int*)occ)[t]=0; }
     for(uint32_t i=0;i<N;i++){
+        if((i&0xFFFu)==0u) XPROG(0x01000000u|i);                       /* breadcrumb: bin, gaussian i */
         volatile float* pu=pub+(uint64_t)i*6;
         double gx=pu[0],gy=pu[1],a=pu[2],b=pu[3],c=pu[4]; float dep=pu[5];
+        /* NON-FINITE GUARD: a NaN/inf splat (densify spawns degenerate children) passes det<=0 (NaN<=0 is false),
+         * and RISC-V fcvt casts NaN/inf -> INT_MAX, so gx/gy become a garbage tile index -> bin_insert writes a
+         * WILD NoC address -> HARD L2CPU-tile NoC hang mid-cmd10 (the data-dependent wedge; NOT clock/voltage).
+         * The bincap clamps the bbox extent but not a NaN center. Skip any non-finite/absurd splat. */
+        if(!(gx>-1e30&&gx<1e30)||!(gy>-1e30&&gy<1e30)||!(a>-1e30&&a<1e30)||!(b>-1e30&&b<1e30)||!(c>-1e30&&c<1e30)){ nnan++; continue; }
         double det=a*c-b*b; if(det<=0.0) continue;
         double A=c/det, Cc=a/det;
         double ex=3.0*proj_sqrtd(A>0.0?A:0.0), ey=3.0*proj_sqrtd(Cc>0.0?Cc:0.0);
         int tx0=dflr((gx-ex)*0.0625); if(tx0<0)tx0=0; int tx1=dflr((gx+ex)*0.0625); if(tx1>ntx-1)tx1=ntx-1;
         int ty0=dflr((gy-ey)*0.0625); if(ty0<0)ty0=0; int ty1=dflr((gy+ey)*0.0625); if(ty1>nty-1)ty1=nty-1;
         if(tx1<tx0||ty1<ty0) continue;
+        /* Cap: a near-degenerate covariance (tiny det) blows A=c/det up -> a 3sigma bbox that spans the whole
+         * image, so ONE bad splat does thousands of bin_inserts (the bin-time spikes). Clamp the bbox to +-hcap
+         * tiles around the projected center; the fringe alpha out there is e^(-4.5)~0.011 and depth-culled anyway. */
+        int cx=dflr(gx*0.0625); if(cx<0)cx=0; if(cx>ntx-1)cx=ntx-1;
+        int cy=dflr(gy*0.0625); if(cy<0)cy=0; if(cy>nty-1)cy=nty-1;
+        int cp=0;
+        if(cx-hcap>tx0){tx0=cx-hcap;cp=1;} if(cx+hcap<tx1){tx1=cx+hcap;cp=1;}
+        if(cy-hcap>ty0){ty0=cy-hcap;cp=1;} if(cy+hcap<ty1){ty1=cy+hcap;cp=1;}
+        ncap+=(uint32_t)cp;
         for(int ty=ty0;ty<=ty1;ty++) for(int tx=tx0;tx<=tx1;tx++) bin_insert(ty*ntx+tx,(int)i,dep,idlgb,depb);
     }
+    ((volatile uint32_t*)BINCAP_N_A)[0]=ncap; ((volatile uint32_t*)0x300027DCu)[0]=nnan;   /* NAN_N: non-finite splats skipped */
     for(int t=0;t<ntile;t++){                          /* OCC = real count; pad id-list to K=12 (match host [:12]) */
         volatile int* L=(volatile int*)(idlgb+(uint32_t)t*0x40u); int cnt=L[0]; ((volatile int*)occ)[t]=cnt;
         if(cnt>0){ int last=L[cnt]; for(int p=cnt;p<12;p++) L[1+p]=last; L[0]=12; }
@@ -217,20 +292,36 @@ static void cmd9_slice(int hid, int NH, uint32_t ring){
     volatile float *img=(volatile float*)(uint64_t)imb;
     int ns=((volatile int*)0x30005DF0u)[0]; if(ns<1)ns=1; if(ns>16)ns=16;
     int wprod=((volatile int*)WPROD_A)[0];                              /* W4: 1 => conductor tilizes, x280 skips produce */
+    int wcons=((volatile int*)WCONS_A)[0];                              /* W4 STAGE-2: 1 => conductor detilizes+MACs, x280 scatter-adds compact */
+    wstate((uint32_t)hid, WS_ENTER, ring, 0u, 0u, (uint32_t)ns); wbeat((uint32_t)hid);
     uint64_t _cp=rdcycle();
     for(int s=hid; s<ns; s+=NH){                                        /* produce + signal my slots */
-        if(!wprod){ produce_ops(s, idlg+s*16, coeff, depth, ordr, L.opb_o);
+        if(!wprod){ wstate((uint32_t)hid, WS_PRODUCE, ring, (uint32_t)s, 0u, (uint32_t)ns);
+                    produce_ops(s, idlg+s*16, coeff, depth, ordr, L.opb_o);
                     produce_pix(s, orig[s*2+0], orig[s*2+1], IMGW, img, L.pxbase); }
+        wstate((uint32_t)hid, WS_SIGNAL, ring, (uint32_t)s, 0u, (uint32_t)ns);
         ((volatile uint32_t*)(FLAG_B+(uint32_t)s*ASTRIDE))[0]=ring;
+        wbeat((uint32_t)hid);
     }
     if(hid==0) g_prod += rdcycle()-_cp;                                 /* W4: x280 produce cycles (hart 0) */
     for(int s=hid; s<ns; s+=NH){                                        /* wait + consume my slots */
         volatile uint32_t* ack=(volatile uint32_t*)(ACK_B+(uint32_t)s*ASTRIDE);
-        uint64_t _cw=rdcycle(); uint32_t to=0u; while(ack[0]!=ring){ if(++to>20000000u) break; }
+        wstate((uint32_t)hid, WS_WAITACK, ring, (uint32_t)s, 0u, (uint32_t)ns);
+        uint64_t _cw=rdcycle(); uint32_t to=0u;
+        while(ack[0]!=ring){                                            /* heartbeat while waiting -> the leader's */
+            if((++to & 0xFFFFu)==0u){ wbeat((uint32_t)hid);            /* watchdog sees this hart is alive, not */
+                ((volatile uint32_t*)(WDIAG+(uint32_t)hid*0x40u))[3]=to; }  /* wedged (WDIAG[3]=ack-spin depth) */
+            if(to>20000000u) break;                                     /* bounded: a truly-missing ack resolves */
+        }
         if(hid==0) g_wait += rdcycle()-_cw;                             /* W4: Tensix render+NoC wait cycles */
-        uint64_t _cc=rdcycle(); consume_slot(s, (idlg+s*16)[0], ordr, mygacc, myloss, L.gino);
+        wstate((uint32_t)hid, WS_CONSUME, ring, (uint32_t)s, to, (uint32_t)ns); wbeat((uint32_t)hid);
+        if(hid==0) XPROG(0x03000000u|(uint32_t)s);                              /* breadcrumb: consume, slot s */
+        uint64_t _cc=rdcycle();
+        if(wcons) consume_compact(s, (idlg+s*16)[0], ordr, mygacc, myloss, L.gcompact);   /* STAGE-2: pure scatter-add */
+        else      consume_slot(s, (idlg+s*16)[0], ordr, mygacc, myloss, L.gino);          /* legacy: detilize+MAC on hub */
         if(hid==0) g_cons += rdcycle()-_cc;                             /* W4: x280 consume cycles */
     }
+    wstate((uint32_t)hid, WS_DONE, ring, 0u, 0u, (uint32_t)ns); wbeat((uint32_t)hid);
 }
 
 /* one hart's stripe of PROJECT+WHITEN (Gaussians g%NH==hid) -> coeff/depth/pub; zeros its OWN gacc+loss */
@@ -250,8 +341,11 @@ static void proj_slice(int hid, int NH){
     volatile float *mygacc=(hid==0)?gacc0:((volatile float*)(uint64_t)L.gacc_x+(uint64_t)(hid-1)*N*9);
     for(uint64_t j=0;j<(uint64_t)N*9;j++) mygacc[j]=0.0f;                      /* zero my accumulator */
     ((volatile float*)(LOSS_H+(uint32_t)hid*0x40u))[0]=0.0f;
+    uint32_t _hbc=0; uint32_t _pace=((volatile uint32_t*)NOCPACE_A)[0];
     for(uint32_t g=(uint32_t)hid; g<N; g+=(uint32_t)NH){
-        volatile float *p=param+(uint64_t)g*14;
+        if((++_hbc & 0x3Fu)==0u) wbeat((uint32_t)hid);                   /* heartbeat every 64 iters: a slow-but-alive */
+        if(hid==0 && (g&0xFFFu)==0u) XPROG(0x05000000u|g);               /* breadcrumb: proj, gaussian g */
+        volatile float *p=param+(uint64_t)g*14;                          /* stripe (denormal FP) never looks frozen */
         float mean[3]={p[0],p[1],p[2]}, sl[3]={p[3],p[4],p[5]}, q[4]={p[6],p[7],p[8],p[9]};
         float gx,gy,dep,a,b,c; proj_fwd(mean,sl,q,Rv,tv,fx,fy,cx,cy,&gx,&gy,&dep,&a,&b,&c);
         float sa=proj_sqrt(a>1e-8f?a:1e-8f), m12=b/sa; float t=c-b*b/a; if(t<0.0f)t=0.0f; float m22=proj_sqrt(t);
@@ -261,6 +355,7 @@ static void proj_slice(int hid, int NH){
         co[5]=f2bf(p[10]); co[6]=f2bf(p[11]); co[7]=f2bf(p[12]); co[8]=f2bf(p[13]);
         union{float f; uint32_t u;} dz; dz.f=dep; depth[g]=dz.u;
         volatile float *pu=pub+(uint64_t)g*6; pu[0]=gx;pu[1]=gy;pu[2]=a;pu[3]=b;pu[4]=c;pu[5]=dep;
+        if(_pace && (_hbc%_pace)==0u) NOC_DRAIN(&co[8], &depth[g], &pu[5]);  /* pace: drain coeff+depth+pub so NH harts can't flood the tile NIU */
     }
 }
 /* one hart's stripe of ADAM (Gaussians g%NH==hid): merge gacc across harts -> whiten-bwd + proj-bwd -> update */
@@ -278,8 +373,11 @@ static void adam_slice(int hid, int NH){
     uint32_t start_g = (uint32_t)hdr[24];
     uint32_t end_g = (uint32_t)hdr[25];
     if(end_g == 0) end_g = N;  /* fallback for un-partitioned 1-tile legacy mode */
+    uint32_t _hbc=0; uint32_t _pace=((volatile uint32_t*)NOCPACE_A)[0];
     for(uint32_t g=start_g+(uint32_t)hid; g<end_g; g+=(uint32_t)NH){
-        volatile float *p=param+(uint64_t)g*14;
+        if((++_hbc & 0x3Fu)==0u) wbeat((uint32_t)hid);                   /* heartbeat every 64 iters: a slow-but-alive */
+        if(hid==0 && (g&0xFFFu)==0u) XPROG(0x04000000u|g);               /* breadcrumb: adam, gaussian g */
+        volatile float *p=param+(uint64_t)g*14;                          /* stripe (denormal FP) never looks frozen */
         float ga[9]; { volatile float* g0=gacc0+(uint64_t)g*9; for(int j=0;j<9;j++) ga[j]=g0[j];
             for(int h=1;h<NH;h++){ volatile float* gh=(volatile float*)(uint64_t)L.gacc_x+(uint64_t)(h-1)*N*9+(uint64_t)g*9;
                 for(int j=0;j<9;j++) ga[j]+=gh[j]; } }
@@ -302,7 +400,43 @@ static void adam_slice(int hid, int NH){
             if(j==10){ if(np<0.05f)np=0.05f; if(np>0.99f)np=0.99f; } else if(j>=11){ if(np<0.0f)np=0.0f; if(np>1.0f)np=1.0f; }
             p[j]=np;
         }
+        if(_pace && (_hbc%_pace)==0u) NOC_DRAIN(&mm[13], &vv[13], &p[13]);  /* pace: drain m+v+param (matches proj_slice) */
     }
+}
+
+/* ROBUST COMPLETION BARRIER — replaces the fixed 40M spin-and-break. Waits until worker hart h publishes
+ * HDONE==ring. A live worker bumps WHB (heartbeat) inside every long spin/loop, so this keeps waiting as long
+ * as the heartbeat ADVANCES (worker still working, no matter how long it legitimately takes) and aborts ONLY a
+ * hart whose heartbeat is FROZEN for WDOG_LIMIT iters (genuinely wedged). No premature break => the leader
+ * never bumps HGO past an unfinished worker => no phase desync (the cmd10->cmd1 leak that caused the stall).
+ * Returns 0 when all harts reached `ring`; -1 if a hart was declared dead (leader records to WERR + TELE and
+ * aborts the command; the host surfaces WERR and resets). When WDOG_EN==0 the OLD 40M break runs (to
+ * reproduce/observe the legacy bug), with the same breadcrumbs recorded. */
+static int barrier_wait(uint32_t ring, int NH, uint32_t cmdid){
+    int watchdog = ((volatile int*)WDOG_EN)[0];
+    for(int h=1; h<NH; h++){
+        volatile uint32_t* hd = (volatile uint32_t*)(HDONE + (uint32_t)h*0x40u);
+        volatile uint32_t* hb = (volatile uint32_t*)(WHB   + (uint32_t)h*0x40u);
+        volatile uint32_t* wd = (volatile uint32_t*)(WDIAG + (uint32_t)h*0x40u);
+        uint32_t last_hb = hb[0], stall = 0u, to = 0u;
+        while(hd[0] != ring){
+            if(watchdog){
+                uint32_t cur = hb[0];
+                if(cur != last_hb){ last_hb = cur; stall = 0u; }         /* worker alive -> keep waiting */
+                else if(++stall > WDOG_LIMIT){                           /* heartbeat frozen -> dead hart */
+                    ((volatile uint32_t*)WERR)[0] = 0x0BAD0000u | ((cmdid & 0xFFu)<<8) | (uint32_t)h;
+                    TELE[24]=cmdid; TELE[25]=(uint32_t)h; TELE[26]=ring; TELE[27]=hd[0];
+                    TELE[28]=wd[0]; TELE[29]=wd[2]; TELE[31]++;          /* worker state+slot, abort count */
+                    return -1;
+                }
+            } else if(++to > 40000000u){                                /* LEGACY 40M break (repro path) */
+                TELE[24]=cmdid; TELE[25]=(uint32_t)h; TELE[26]=ring; TELE[27]=hd[0];
+                TELE[28]=wd[0]; TELE[29]=wd[2]; TELE[30]++;              /* legacy-break count */
+                break;
+            }
+        }
+    }
+    return 0;
 }
 
 int main(void){
@@ -312,13 +446,16 @@ int main(void){
         volatile uint32_t* hgo  =(volatile uint32_t*)(HGO  +hid*0x40u);
         volatile uint32_t* hdone=(volatile uint32_t*)(HDONE+hid*0x40u);
         TELE[0]=0x48570000u|hid;          /* 'HW'|hid — worker alive marker (own tele window) */
-        uint32_t wlast=0u;
-        for(;;){ uint32_t g=hgo[0]; if(g==wlast) continue;
+        uint32_t wlast=0u, ipoll=0u;
+        for(;;){ uint32_t g=hgo[0];
+            if(g==wlast){ if((++ipoll & 0x3FFFu)==0u) wbeat(hid); continue; }  /* idle heartbeat */
             int NH=((volatile int*)NHARTS_A)[0]; if(NH<1)NH=1; if(NH>4)NH=4;
             int wc=((volatile int*)WCMD_A)[0];
-            if(wc==2) proj_slice((int)hid, NH);            /* project stripe */
-            else if(wc==1) adam_slice((int)hid, NH);       /* adam stripe */
-            else cmd9_slice((int)hid, NH, g);              /* orchestrate stripe */
+            wbeat(hid);
+            if(wc==2){ wstate(hid,WS_PROJ,g,0u,0u,0u); proj_slice((int)hid, NH); }    /* project stripe */
+            else if(wc==1){ wstate(hid,WS_ADAM,g,0u,0u,0u); adam_slice((int)hid, NH); } /* adam stripe */
+            else cmd9_slice((int)hid, NH, g);                                          /* orchestrate stripe */
+            wstate(hid,WS_DONE,g,0u,0u,0u); wbeat(hid);
             wlast=g; hdone[0]=g; }
     }
     volatile int   *hdr =(volatile int  *)0x30005000u;
@@ -354,10 +491,10 @@ int main(void){
         if(cmd==2u){                         /* PROJECT+WHITEN across NH harts (Gaussians g%NH==hid), zero gacc/loss */
             int NH=((volatile int*)NHARTS_A)[0]; if(NH<1)NH=1; if(NH>4)NH=4;
             ((volatile int*)WCMD_A)[0]=2;
+            __asm__ volatile("fence" ::: "memory");                                        /* WCMD before wake (else stale) */
             for(int h=1;h<NH;h++) ((volatile uint32_t*)(HGO+(uint32_t)h*0x40u))[0]=ring;   /* wake workers */
             proj_slice(0, NH);                                                             /* hart 0's stripe */
-            for(int h=1;h<NH;h++){ volatile uint32_t* hd=(volatile uint32_t*)(HDONE+(uint32_t)h*0x40u);
-                uint32_t to=0u; while(hd[0]!=ring){ if(++to>40000000u) break; } }          /* barrier */
+            barrier_wait(ring, NH, 2u);                                                    /* robust barrier */
         }
         else if(cmd==5u){                    /* PRODUCE tile operands from coeff[] by the tile's id list */
             int K=idl[0]; if(K>16)K=16;
@@ -404,10 +541,10 @@ int main(void){
         else if(cmd==1u){                    /* ADAM across NH harts (Gaussians g%NH==hid); merge per-hart gacc/loss */
             int NH=((volatile int*)NHARTS_A)[0]; if(NH<1)NH=1; if(NH>4)NH=4;
             ((volatile int*)WCMD_A)[0]=1;
+            __asm__ volatile("fence" ::: "memory");                                        /* WCMD before wake (else stale) */
             for(int h=1;h<NH;h++) ((volatile uint32_t*)(HGO+(uint32_t)h*0x40u))[0]=ring;   /* wake workers */
             adam_slice(0, NH);                                                             /* hart 0's stripe */
-            for(int h=1;h<NH;h++){ volatile uint32_t* hd=(volatile uint32_t*)(HDONE+(uint32_t)h*0x40u);
-                uint32_t to=0u; while(hd[0]!=ring){ if(++to>40000000u) break; } }          /* barrier */
+            barrier_wait(ring, NH, 1u);                                                    /* robust barrier */
             { float ls=0.0f; for(int h=0;h<NH;h++) ls+=((volatile float*)(LOSS_H+(uint32_t)h*0x40u))[0]; loss[0]=ls; }
         }
         else if(cmd==7u){                    /* ORCHESTRATE one tile: produce -> signal -> wait ack -> consume */
@@ -425,11 +562,12 @@ int main(void){
         else if(cmd==9u){                    /* ORCHESTRATE a BATCH across NH harts (slots partitioned s%NH==hid) */
             int NH=((volatile int*)NHARTS_A)[0]; if(NH<1)NH=1; if(NH>4)NH=4;
             ((volatile int*)WCMD_A)[0]=9;                                                  /* workers run cmd9_slice */
+            __asm__ volatile("fence" ::: "memory");                                        /* WCMD before wake (else stale) */
             for(int h=1;h<NH;h++) ((volatile uint32_t*)(HGO+(uint32_t)h*0x40u))[0]=ring;   /* wake workers */
             cmd9_slice(0, NH, ring);                                                       /* hart 0's own slots */
-            { uint32_t ndone=1u;                                                           /* barrier: workers done */
-              for(int h=1;h<NH;h++){ volatile uint32_t* hd=(volatile uint32_t*)(HDONE+(uint32_t)h*0x40u);
-                uint32_t to=0u; while(hd[0]!=ring){ if(++to>40000000u) break; } if(hd[0]==ring) ndone++; }
+            barrier_wait(ring, NH, 9u);                                                    /* robust barrier */
+            { uint32_t ndone=1u;
+              for(int h=1;h<NH;h++){ if(((volatile uint32_t*)(HDONE+(uint32_t)h*0x40u))[0]==ring) ndone++; }
               TELE[5]=ring; TELE[6]=ndone; TELE[7]=(uint32_t)NH; }
         }
         else if(cmd==11u){                   /* ON-DEVICE BIN only (host still reads OCC + dispatches) — validation aid */
@@ -452,8 +590,9 @@ int main(void){
             volatile int* orig=(volatile int*)0x30006200u;                      /* per-slot tile origin (ox,oy) */
             volatile int* occ =(volatile int*)(uint64_t)LY.occ;
             static uint32_t dring=0x40000000u;                                  /* batch ring, high base -> never collides with doorbell rings */
-            int s=0, nocc=0;
+            int s=0, nocc=0, aborted=0;
             for(int t=0;t<ntile;t++){
+                if(aborted) break;
                 if(occ[t]<=0) continue;
                 nocc++;
                 volatile int* L=(volatile int*)(uint64_t)(LY.idlgb+(uint32_t)t*0x40u); int cnt=L[0]; if(cnt>16)cnt=16;
@@ -463,29 +602,32 @@ int main(void){
                     volatile uint32_t* dsc=(volatile uint32_t*)(uint64_t)(LY.desc+(uint32_t)s*DESC_STRIDE);
                     volatile uint32_t* cf =(volatile uint32_t*)(uint64_t)LY.coeff;
                     dsc[0]=(uint32_t)cnt; dsc[1]=(uint32_t)((t%ntx)*16); dsc[2]=(uint32_t)((t/ntx)*16);
+                    uint32_t imb=((volatile uint32_t*)IMG_BASE_A)[0]; if(imb==0u) imb=LY.tgt_img;
+                    dsc[DESC_IMG]=imb;                                           /* live view base -> conductor gt read */
                     volatile int* ors=(volatile int*)0x30005200u + s*16;         /* sorted->global for x280 consume */
                     for(int i=0;i<cnt;i++){ uint32_t gid=(uint32_t)idlg[s*16+1+i]; ors[i]=(int)gid;
                         for(int j=0;j<9;j++) dsc[3+i*9+j]=cf[(uint64_t)gid*9+j]; }   /* coeffs in depth-sorted id order */
                 }
                 if(++s==W){                                                     /* batch full -> dispatch across NH harts */
+                    XPROG(0x02000000u|(uint32_t)t);                             /* breadcrumb: dispatch, tile t */
                     ((volatile int*)0x30005DF0u)[0]=s; dring++;                  /* NSLOT + fresh batch ring */
                     __asm__ volatile("fence" ::: "memory");                     /* slot writes globally visible before wake */
                     for(int h=1;h<NH;h++) ((volatile uint32_t*)(HGO+(uint32_t)h*0x40u))[0]=dring;
                     cmd9_slice(0, NH, dring);                                    /* hart 0's slots */
-                    for(int h=1;h<NH;h++){ volatile uint32_t* hd=(volatile uint32_t*)(HDONE+(uint32_t)h*0x40u);
-                        uint32_t to=0u; while(hd[0]!=dring){ if(++to>40000000u) break; } }   /* barrier */
+                    if(barrier_wait(dring, NH, 10u) < 0){ aborted=1; break; }    /* robust barrier; dead hart -> abort */
                     s=0;
                 }
             }
-            if(s>0){                                                            /* final partial batch */
+            if(!aborted && s>0){                                                /* final partial batch */
+                XPROG(0x02000000u|(uint32_t)nocc);                              /* breadcrumb: final dispatch */
                 ((volatile int*)0x30005DF0u)[0]=s; dring++;
                 __asm__ volatile("fence" ::: "memory");
                 for(int h=1;h<NH;h++) ((volatile uint32_t*)(HGO+(uint32_t)h*0x40u))[0]=dring;
                 cmd9_slice(0, NH, dring);
-                for(int h=1;h<NH;h++){ volatile uint32_t* hd=(volatile uint32_t*)(HDONE+(uint32_t)h*0x40u);
-                    uint32_t to=0u; while(hd[0]!=dring){ if(++to>40000000u) break; } }
+                if(barrier_wait(dring, NH, 10u) < 0) aborted=1;
             }
             TELE[4]=(uint32_t)nocc;                                             /* occupied-tile count for the host */
+            TELE[13]=(uint32_t)aborted;                                         /* 1 => a dead hart aborted the step (see WERR) */
             TELE[8]=(uint32_t)(bin_cyc>>10);  TELE[9]=(uint32_t)(g_prod>>10);   /* W4 breakdown in KILOcycles (>>10 to */
             TELE[10]=(uint32_t)(g_wait>>10);  TELE[11]=(uint32_t)(g_cons>>10);  /* fit u32): bin+produce|render-wait+consume */
             TELE[12]=(uint32_t)((nocc + W - 1) / W);                            /* dispatched batch count (~nocc/W) */

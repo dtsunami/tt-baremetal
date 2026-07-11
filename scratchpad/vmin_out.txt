@@ -1,0 +1,6 @@
+resetting card ...
+reset settled; init ...
+reset_state {'raw': 15, 'released': False, 'wedged': False, 'bit': 4}
+bringup {'ok': True, 'l2cpu_reset': 31}
+pattern=fp golden 0xfad5856d all-eq True
+

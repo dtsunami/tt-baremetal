@@ -1,0 +1,194 @@
+<title>x280 V/F Shmoo</title>
+<style>
+  :root{
+    --mono: ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --sans: system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --bg:#0a0d12; --panel:#111621; --panel2:#161d29; --line:#232c3b;
+    --ink:#c7d0dd; --dim:#828da0; --faint:#454f61;
+    --accent:#35e0cf;
+    --pass:#37b56a; --pass-tint:rgba(55,181,106,.10);
+    --fail:#ff5340; --fail-tint:rgba(255,83,64,.10);
+    --lock:#f0a12c; --lock-tint:rgba(240,161,44,.12);
+    --grid:#1b2230;
+    --shadow:0 1px 0 rgba(255,255,255,.03), 0 18px 40px -24px rgba(0,0,0,.8);
+  }
+  @media (prefers-color-scheme: light){
+    :root{
+      --bg:#eef0ec; --panel:#ffffff; --panel2:#f6f7f4; --line:#dfe2dc;
+      --ink:#1b2432; --dim:#5c6676; --faint:#aab2bf; --accent:#0f9d90;
+      --pass:#2f9e5c; --pass-tint:rgba(47,158,92,.12); --fail:#e23a2c; --fail-tint:rgba(226,58,44,.09);
+      --lock:#c67b12; --lock-tint:rgba(198,123,18,.13); --grid:#e7eae4;
+      --shadow:0 1px 0 rgba(255,255,255,.6), 0 16px 34px -26px rgba(20,30,45,.35);
+    }
+  }
+  :root[data-theme="dark"]{ --bg:#0a0d12; --panel:#111621; --panel2:#161d29; --line:#232c3b; --ink:#c7d0dd;
+    --dim:#828da0; --faint:#454f61; --accent:#35e0cf; --pass:#37b56a; --pass-tint:rgba(55,181,106,.10);
+    --fail:#ff5340; --fail-tint:rgba(255,83,64,.10); --lock:#f0a12c; --lock-tint:rgba(240,161,44,.12);
+    --grid:#1b2230; --shadow:0 1px 0 rgba(255,255,255,.03), 0 18px 40px -24px rgba(0,0,0,.8);}
+  :root[data-theme="light"]{ --bg:#eef0ec; --panel:#ffffff; --panel2:#f6f7f4; --line:#dfe2dc; --ink:#1b2432;
+    --dim:#5c6676; --faint:#aab2bf; --accent:#0f9d90; --pass:#2f9e5c; --pass-tint:rgba(47,158,92,.12);
+    --fail:#e23a2c; --fail-tint:rgba(226,58,44,.09); --lock:#c67b12; --lock-tint:rgba(198,123,18,.13);
+    --grid:#e7eae4; --shadow:0 1px 0 rgba(255,255,255,.6), 0 16px 34px -26px rgba(20,30,45,.35);}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+    background-image:radial-gradient(120% 80% at 50% -10%, color-mix(in oklab,var(--accent) 6%, transparent), transparent 60%);}
+  .wrap{max-width:1060px;margin:0 auto;padding:clamp(20px,4vw,52px) clamp(16px,3vw,32px) 72px;}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.24em;text-transform:uppercase;color:var(--accent);}
+  h1{font-size:clamp(25px,4.3vw,39px);line-height:1.05;margin:.28em 0 .18em;letter-spacing:-.01em;text-wrap:balance;font-weight:650;}
+  h1 b{color:var(--accent);font-weight:650;}
+  .sub{color:var(--dim);font-family:var(--mono);font-size:12.5px;}
+  .sub span{color:var(--ink);}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:28px 0 24px;}
+  .kpi{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:15px 16px;box-shadow:var(--shadow);}
+  .kpi .lab{font-family:var(--mono);font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--dim);}
+  .kpi .val{font-family:var(--mono);font-size:31px;font-weight:600;letter-spacing:-.02em;margin-top:6px;
+    font-variant-numeric:tabular-nums;line-height:1;}
+  .kpi .val small{font-size:14px;color:var(--dim);font-weight:500;margin-left:2px;}
+  .kpi .note{font-size:11.5px;color:var(--dim);margin-top:7px;}
+  .kpi.accent .val{color:var(--accent);}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 20px 14px;box-shadow:var(--shadow);}
+  .card h2{font-size:13px;margin:0;font-weight:600;display:flex;align-items:center;gap:9px;}
+  .card h2 .tag{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);
+    border:1px solid var(--line);border-radius:5px;padding:2px 6px;}
+  .card p.cap{color:var(--dim);font-size:12px;margin:5px 0 12px;max-width:66ch;}
+  .chart-scroll{overflow-x:auto;}
+  svg{display:block;width:100%;min-width:560px;height:auto;}
+  .axl{fill:var(--dim);font-family:var(--mono);font-size:11px;}
+  .axu{fill:var(--faint);font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;}
+  .legend{display:flex;flex-wrap:wrap;gap:16px;margin-top:12px;font-size:11.5px;color:var(--dim);align-items:center;}
+  .legend .k{display:inline-flex;align-items:center;gap:6px;}
+  .sw{width:13px;height:13px;border-radius:3px;display:inline-block;border:1px solid var(--line);}
+  .notes{margin-top:22px;display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;}
+  .note-c{background:var(--panel2);border:1px solid var(--line);border-left:2px solid var(--accent);border-radius:8px;padding:13px 15px;}
+  .note-c h3{margin:0 0 5px;font-size:12.5px;font-weight:600;}
+  .note-c p{margin:0;font-size:12.5px;color:var(--dim);}
+  .note-c.lock{border-left-color:var(--lock);}
+  .note-c code{font-family:var(--mono);font-size:11.5px;color:var(--ink);background:color-mix(in oklab,var(--ink) 8%,transparent);padding:1px 5px;border-radius:4px;}
+  footer{margin-top:34px;color:var(--faint);font-family:var(--mono);font-size:11px;border-top:1px solid var(--line);
+    padding-top:14px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;}
+  @media (prefers-reduced-motion: reduce){*{transition:none!important;}}
+</style>
+
+<div class="wrap">
+  <div class="eyebrow">Silicon V/F Margining · Blackhole p150a</div>
+  <h1>x280 Vmin curve: the core clocks to <b>2.4&nbsp;GHz</b> inside the firmware voltage cap</h1>
+  <div class="sub"><span>4× SiFive x280 harts</span> · FP-FMA self-check virus · per-hart binary Vmin, voltage-leads-frequency · <span>2026-07-08</span></div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="card">
+    <h2>V/F operating region <span class="tag">Vmin vs frequency · voltage ↑</span></h2>
+    <p class="cap">The measured minimum core voltage to run each frequency error-free (weakest hart). Above the line is stable, below it the datapath fails. The curve is linear at ~0.37&nbsp;mV/MHz and runs straight into the 900&nbsp;mV firmware clamp — everything past 2.4&nbsp;GHz lives in the locked band that needs a SPIROM <code style="font-family:var(--mono)">vdd_max</code> edit.</p>
+    <div class="chart-scroll"><svg id="chart" viewBox="0 0 720 440" role="img" aria-label="Vmin versus frequency, voltage on the vertical axis"></svg></div>
+    <div class="legend">
+      <span class="k"><span class="sw" style="background:var(--pass-tint);border-color:var(--pass)"></span> stable (pass)</span>
+      <span class="k"><span class="sw" style="background:var(--fail-tint);border-color:var(--fail)"></span> undervolt (fail)</span>
+      <span class="k"><span class="sw" style="background:var(--accent);border:none"></span> measured Vmin (hart 3)</span>
+      <span class="k"><span class="sw" style="background:var(--lock-tint);border-color:var(--lock)"></span> locked — needs vdd_max unlock</span>
+      <span class="k"><span class="sw" style="background:transparent;border-style:dashed;border-color:var(--accent)"></span> grid probe (○ pass / × fail)</span>
+    </div>
+  </div>
+
+  <div class="notes">
+    <div class="note-c">
+      <h3>hart 3 is the weak die</h3>
+      <p>It sets Vmin at every frequency; hart 0 is next (both fail at 2500 MHz). All four share one PLL &amp; one rail, so hart 3 is the limiter.</p>
+    </div>
+    <div class="note-c">
+      <h3>Binary search, from above</h3>
+      <p>Voltage leads frequency, then step down to the first soft error. Approaching the edge from above avoids hard-wedging a weak hart on the shared rail.</p>
+    </div>
+    <div class="note-c lock">
+      <h3>2.4 GHz is the firmware ceiling</h3>
+      <p>2400 MHz needs 882 mV (fits under <code>vdd_max</code>=900). 2500 needs ~919 → blocked. Reaching it means a reversible SPIROM <code>ChipLimits</code> edit toward 1.0 V.</p>
+    </div>
+    <div class="note-c">
+      <h3>Thermals not the limiter</h3>
+      <p>Peak 74 °C at the edge — well under the 90 °C throttle. Voltage headroom, not heat, is the wall.</p>
+    </div>
+  </div>
+
+  <footer>
+    <span>measured on silicon · ttstar · pyluwen force_vdd + PLL fbdiv, no DVFS governor</span>
+    <span>golden identical across all 4 harts</span>
+  </footer>
+</div>
+
+<script>
+const VMIN = [{"f":2100,"v":771,"lim":3},{"f":2200,"v":804,"lim":3},{"f":2300,"v":844,"lim":3},{"f":2400,"v":882,"lim":3}];          // measured chip Vmin (weakest hart) within the 900 mV clamp
+const LOCKED = [{"f":2500,"v":919},{"f":2600,"v":956}];      // extrapolated beyond the clamp (needs vdd_max unlock)
+const GRID = [{"v":765,"f":1775,"fail":false},{"v":765,"f":1775,"fail":false},{"v":765,"f":1825,"fail":false},{"v":765,"f":1825,"fail":false},{"v":765,"f":1875,"fail":false},{"v":765,"f":1900,"fail":false},{"v":765,"f":1900,"fail":false},{"v":765,"f":1950,"fail":false},{"v":765,"f":1950,"fail":false},{"v":765,"f":2000,"fail":false},{"v":765,"f":2000,"fail":false},{"v":765,"f":2050,"fail":false},{"v":765,"f":2050,"fail":false},{"v":765,"f":2100,"fail":false},{"v":765,"f":2100,"fail":true},{"v":765,"f":2150,"fail":true},{"v":765,"f":2150,"fail":true},{"v":823,"f":1750,"fail":false},{"v":823,"f":1800,"fail":false},{"v":823,"f":1800,"fail":false},{"v":823,"f":1850,"fail":false},{"v":823,"f":1850,"fail":false},{"v":823,"f":1900,"fail":false},{"v":823,"f":1900,"fail":false},{"v":823,"f":1950,"fail":false},{"v":823,"f":1950,"fail":false},{"v":823,"f":2000,"fail":false},{"v":823,"f":2000,"fail":false},{"v":823,"f":2050,"fail":false},{"v":823,"f":2050,"fail":false},{"v":823,"f":2100,"fail":false},{"v":823,"f":2125,"fail":false},{"v":823,"f":2125,"fail":false},{"v":823,"f":2175,"fail":false},{"v":823,"f":2175,"fail":false},{"v":823,"f":2225,"fail":false},{"v":823,"f":2225,"fail":false},{"v":823,"f":2275,"fail":true},{"v":823,"f":2275,"fail":true},{"v":823,"f":2325,"fail":true},{"v":881,"f":1775,"fail":false},{"v":881,"f":1775,"fail":false},{"v":881,"f":1825,"fail":false},{"v":881,"f":1825,"fail":false},{"v":881,"f":1875,"fail":false},{"v":881,"f":1875,"fail":false},{"v":881,"f":1925,"fail":false},{"v":881,"f":1925,"fail":false},{"v":881,"f":1975,"fail":false},{"v":881,"f":1975,"fail":false},{"v":881,"f":2025,"fail":false},{"v":881,"f":2025,"fail":false},{"v":881,"f":2075,"fail":false},{"v":881,"f":2075,"fail":false},{"v":881,"f":2125,"fail":false},{"v":881,"f":2125,"fail":false},{"v":881,"f":2175,"fail":false},{"v":881,"f":2200,"fail":false},{"v":881,"f":2200,"fail":false},{"v":881,"f":2250,"fail":false},{"v":881,"f":2250,"fail":false},{"v":881,"f":2300,"fail":false},{"v":881,"f":2300,"fail":false},{"v":881,"f":2350,"fail":false},{"v":881,"f":2350,"fail":false},{"v":881,"f":2400,"fail":true},{"v":881,"f":2400,"fail":true},{"v":881,"f":2450,"fail":true},{"v":899,"f":1750,"fail":false},{"v":899,"f":1800,"fail":false},{"v":899,"f":1800,"fail":false},{"v":899,"f":1850,"fail":false},{"v":899,"f":1850,"fail":false},{"v":899,"f":1900,"fail":false},{"v":899,"f":1900,"fail":false},{"v":899,"f":1950,"fail":false},{"v":899,"f":1950,"fail":false},{"v":899,"f":2000,"fail":false},{"v":899,"f":2000,"fail":false},{"v":899,"f":2050,"fail":false},{"v":899,"f":2050,"fail":false},{"v":899,"f":2100,"fail":false},{"v":899,"f":2100,"fail":false},{"v":899,"f":2125,"fail":false},{"v":899,"f":2175,"fail":false},{"v":899,"f":2175,"fail":false},{"v":899,"f":2225,"fail":false},{"v":899,"f":2225,"fail":false},{"v":899,"f":2275,"fail":false},{"v":899,"f":2275,"fail":false},{"v":899,"f":2325,"fail":false},{"v":899,"f":2325,"fail":false},{"v":899,"f":2375,"fail":false},{"v":899,"f":2375,"fail":false},{"v":899,"f":2425,"fail":false},{"v":899,"f":2425,"fail":true},{"v":899,"f":2475,"fail":true},{"v":899,"f":2475,"fail":true}];          // frontier probe points {v,f,fail}
+const CLAMP = 900, VLO = 700, VHI = 1000, FLO = 1700, FHI = 2650;
+const W = 720, H = 440, mL = 56, mR = 18, mT = 20, mB = 44;
+const X = f => mL + (f - FLO) / (FHI - FLO) * (W - mL - mR);
+const Y = v => H - mB - (v - VLO) / (VHI - VLO) * (H - mT - mB);
+const slope = ((VMIN[VMIN.length-1].v - VMIN[0].v) / (VMIN[VMIN.length-1].f - VMIN[0].f));
+
+let s = "";
+// region shading: build the Vmin boundary polyline across the whole width (extrapolated at the ends)
+const vAt = f => VMIN[0].v + (f - VMIN[0].f) * slope;
+const bx0 = FLO, bx1 = FHI;
+const by0 = vAt(bx0), by1 = vAt(bx1);
+// PASS region (above the line, up to clamp) and FAIL region (below the line)
+s += `<rect x="${mL}" y="${mT}" width="${W-mL-mR}" height="${H-mT-mB}" fill="var(--pass-tint)"/>`;
+s += `<polygon points="${X(bx0)},${Y(by0)} ${X(bx1)},${Y(by1)} ${X(bx1)},${H-mB} ${X(bx0)},${H-mB}" fill="var(--fail-tint)"/>`;
+// locked band above the clamp
+s += `<rect x="${mL}" y="${mT}" width="${W-mL-mR}" height="${Y(CLAMP)-mT}" fill="var(--lock-tint)"/>`;
+
+// grid ticks
+for(let v=700; v<=1000; v+=50){
+  s += `<line x1="${mL}" y1="${Y(v)}" x2="${W-mR}" y2="${Y(v)}" stroke="var(--grid)"/>`;
+  s += `<text class="axl" x="${mL-9}" y="${Y(v)+4}" text-anchor="end">${v}</text>`;
+}
+for(let f=1800; f<=2600; f+=200){
+  s += `<line x1="${X(f)}" y1="${mT}" x2="${X(f)}" y2="${H-mB}" stroke="var(--grid)"/>`;
+  s += `<text class="axl" x="${X(f)}" y="${H-mB+17}" text-anchor="middle">${f}</text>`;
+}
+s += `<text class="axu" x="${mL}" y="${mT-6}">vcore mV</text>`;
+s += `<text class="axu" x="${W-mR}" y="${H-6}" text-anchor="end">core MHz</text>`;
+
+// clamp line
+s += `<line x1="${mL}" y1="${Y(CLAMP)}" x2="${W-mR}" y2="${Y(CLAMP)}" stroke="var(--lock)" stroke-width="1.4" stroke-dasharray="4 3"/>`;
+s += `<text class="axl" x="${mL+6}" y="${Y(CLAMP)-6}" style="fill:var(--lock)">firmware vdd_max = 900 mV (CMFW clamp)</text>`;
+// nominal 1750 marker
+s += `<line x1="${X(1750)}" y1="${mT}" x2="${X(1750)}" y2="${H-mB}" stroke="var(--faint)" stroke-dasharray="2 4"/>`;
+s += `<text class="axl" x="${X(1750)+5}" y="${H-mB-6}" style="fill:var(--faint)">1750 nom</text>`;
+
+// grid probe scatter (validation texture)
+for(const p of GRID){
+  const cx = X(p.f), cy = Y(p.v);
+  if(cx < mL || cx > W-mR) continue;
+  if(p.fail) s += `<path d="M${cx-2.5},${cy-2.5} l5,5 M${cx+2.5},${cy-2.5} l-5,5" stroke="var(--fail)" stroke-width="1.1" opacity=".55"/>`;
+  else s += `<circle cx="${cx}" cy="${cy}" r="2.1" fill="none" stroke="var(--pass)" stroke-width="1.1" opacity=".5"/>`;
+}
+
+// Vmin curve (measured, solid) + extrapolated (dashed into locked band)
+const mpts = VMIN.map(p => `${X(p.f)},${Y(p.v)}`).join(" ");
+s += `<polyline points="${mpts}" fill="none" stroke="var(--accent)" stroke-width="2.4"/>`;
+const lpts = [VMIN[VMIN.length-1], ...LOCKED].map(p => `${X(p.f)},${Y(p.v)}`).join(" ");
+s += `<polyline points="${lpts}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-dasharray="3 3" opacity=".7"/>`;
+for(const p of VMIN){
+  s += `<circle cx="${X(p.f)}" cy="${Y(p.v)}" r="4.5" fill="var(--accent)"/>`;
+  s += `<text class="axl" x="${X(p.f)}" y="${Y(p.v)-11}" text-anchor="middle" style="fill:var(--ink);font-weight:600">${p.v}</text>`;
+}
+for(const p of LOCKED){
+  s += `<circle cx="${X(p.f)}" cy="${Y(p.v)}" r="3.5" fill="none" stroke="var(--accent)" stroke-dasharray="1.5 1.5"/>`;
+  s += `<text class="axl" x="${X(p.f)}" y="${Y(p.v)-9}" text-anchor="middle" style="fill:var(--lock)">~${p.v}</text>`;
+}
+// highlight the max-within-clamp point
+const hi = VMIN[VMIN.length-1];
+s += `<circle cx="${X(hi.f)}" cy="${Y(hi.v)}" r="8" fill="none" stroke="var(--accent)" stroke-width="1.3"/>`;
+
+document.getElementById("chart").innerHTML = s;
+
+const kpis = [
+  {lab:"max OC @ ≤900 mV", val:"2400", u:"MHz", note:"@ 882 mV — +37% over 1750", accent:1},
+  {lab:"Vmin slope", val:slope.toFixed(2), u:"mV/MHz", note:"linear 2100–2400 MHz"},
+  {lab:"weak die", val:"hart 3", note:"sets Vmin at every freq"},
+  {lab:"to reach 2.5 GHz", val:"~919", u:"mV", note:"above the 900 clamp"},
+];
+document.getElementById("kpis").innerHTML = kpis.map(k=>`
+  <div class="kpi ${k.accent?'accent':''}"><div class="lab">${k.lab}</div>
+  <div class="val">${k.val}${k.u?`<small>${k.u}</small>`:''}</div><div class="note">${k.note}</div></div>`).join("");
+</script>

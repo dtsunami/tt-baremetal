@@ -1,0 +1,21 @@
+{
+ "pattern": "fp",
+ "ceil": 900,
+ "freqs": {
+  "2100": {
+   "vmin": 804,
+   "limiter": 3,
+   "anchor": 844
+  },
+  "2300": {
+   "vmin": 844,
+   "limiter": 3,
+   "anchor": 885
+  },
+  "2400": {
+   "vmin": null,
+   "limiter": 0,
+   "anchor": 900
+  }
+ }
+}
