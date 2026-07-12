@@ -27,7 +27,7 @@ remains the documented fallback.
 > ⚠️ **Single-env tradeoff:** tt-metal pins heavy deps (a specific torch, plus `rich`/`textual` versions that also matter to tt-smi). Forcing them into `.ttvenv` can trigger pip upgrades/downgrades that disturb tt-smi's TUI. If that happens, the escape hatch is to let tt-metal keep its own `python_env` (drop the `PYTHON_ENV_DIR` override in §5) and swap the fork `.so` into it per §8-legacy.
 
 
-## 1b. Remote access — set it up FIRST (the part that actually hurts on a wipe)
+## 0. Remote access — set it up FIRST (the part that actually hurts on a wipe)
 
 Do this right after the base install so everything else can be driven headless from your laptop.
 
@@ -36,10 +36,6 @@ Do this right after the base install so everything else can be driven headless f
 ```bash
 sudo apt install -y openssh-server
 sudo systemctl enable --now ssh
-# from your laptop, push your key, then disable password auth:
-#   ssh-copy-id starboy@ttstar
-sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-sudo systemctl restart ssh
 ```
 
 **VSCode tunnel** (persistent, survives reboot, no inbound port / port-forward needed):
