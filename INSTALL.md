@@ -26,6 +26,44 @@ remains the documented fallback.
 **Environment model:** every Python component lives in a **single `~/.ttvenv`** — activate it once and `pip install -e` each repo into it, so a fork edit + reinstall is all it takes to iterate. `kmd` is a kernel module (DKMS), not in the venv. Because everything shares one env, the fork's DMA binding is compiled straight into `.ttvenv` by the editable install, which **retires the per-env `.so` swap** the old multi-venv layout needed (§8).
 > ⚠️ **Single-env tradeoff:** tt-metal pins heavy deps (a specific torch, plus `rich`/`textual` versions that also matter to tt-smi). Forcing them into `.ttvenv` can trigger pip upgrades/downgrades that disturb tt-smi's TUI. If that happens, the escape hatch is to let tt-metal keep its own `python_env` (drop the `PYTHON_ENV_DIR` override in §5) and swap the fork `.so` into it per §8-legacy.
 
+
+## 1b. Remote access — set it up FIRST (the part that actually hurts on a wipe)
+
+Do this right after the base install so everything else can be driven headless from your laptop.
+
+**SSH:**
+
+```bash
+sudo apt install -y openssh-server
+sudo systemctl enable --now ssh
+# from your laptop, push your key, then disable password auth:
+#   ssh-copy-id starboy@ttstar
+sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+sudo systemctl restart ssh
+```
+
+**VSCode tunnel** (persistent, survives reboot, no inbound port / port-forward needed):
+
+```bash
+# headless VS Code CLI
+curl -Lk 'https://code.visualstudio.com/sha/download?build=stable&os=cli-alpine-x64' -o vscode_cli.tar.gz
+tar -xf vscode_cli.tar.gz && sudo mv code /usr/local/bin/
+
+# one-time device-code login (prints a github.com/login/device code), stable tunnel name:
+code tunnel --accept-server-license-terms --name ttstar
+
+# then persist it across reboots (Ctrl-C the above first):
+code tunnel service install --accept-server-license-terms --name ttstar
+```
+
+Connect from anywhere via **`https://vscode.dev/tunnel/ttstar`** or the *Remote - Tunnels*
+extension. The tunnel name `ttstar` is stable across reinstalls, so the *next* wipe only needs the
+one device-code re-login — same URL, no reconfig.
+
+> The device-code login is one-time; the systemd service reconnects automatically on boot.
+
+---
+
 ---
 
 ## 1. System prerequisites
@@ -77,42 +115,6 @@ lspci -nn | grep -i 1e52      # expect: Processing accelerators [1e52:b140]  (Bl
 
 ---
 
-## 1b. Remote access — set it up FIRST (the part that actually hurts on a wipe)
-
-Do this right after the base install so everything else can be driven headless from your laptop.
-
-**SSH:**
-
-```bash
-sudo apt install -y openssh-server
-sudo systemctl enable --now ssh
-# from your laptop, push your key, then disable password auth:
-#   ssh-copy-id starboy@ttstar
-sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-sudo systemctl restart ssh
-```
-
-**VSCode tunnel** (persistent, survives reboot, no inbound port / port-forward needed):
-
-```bash
-# headless VS Code CLI
-curl -Lk 'https://code.visualstudio.com/sha/download?build=stable&os=cli-alpine-x64' -o vscode_cli.tar.gz
-tar -xf vscode_cli.tar.gz && sudo mv code /usr/local/bin/
-
-# one-time device-code login (prints a github.com/login/device code), stable tunnel name:
-code tunnel --accept-server-license-terms --name ttstar
-
-# then persist it across reboots (Ctrl-C the above first):
-code tunnel service install --accept-server-license-terms --name ttstar
-```
-
-Connect from anywhere via **`https://vscode.dev/tunnel/ttstar`** or the *Remote - Tunnels*
-extension. The tunnel name `ttstar` is stable across reinstalls, so the *next* wipe only needs the
-one device-code re-login — same URL, no reconfig.
-
-> The device-code login is one-time; the systemd service reconnects automatically on boot.
-
----
 
 ## 2. KMD — kernel-mode driver (`tenstorrent` 2.8.0)
 
