@@ -34,7 +34,7 @@ Do this right after the base install so everything else can be driven headless f
 **SSH:**
 
 ```bash
-sudo apt install -y openssh-server
+sudo apt install -y openssh-server curl
 sudo systemctl enable --now ssh
 ```
 
